@@ -12,7 +12,18 @@ Single-source stub replacement for `EasyAntiCheat_x64.dll`. Satisfies a game's E
 |-|-|
 | [`eac_emu_stub.c`](eac_emu_stub.c) | The stub itself. ~200 lines of C. Implements the public EOS AntiCheat Client interface + classic EAC client exports. All functions return success. |
 | [`eac_emu_stub.def`](eac_emu_stub.def) | Module definition — exports with placeholder ordinals. Replace classic-EAC ordinals with ones lifted from your target build's real `EasyAntiCheat_x64.dll`. |
+| [`b_dll_ordinals.c`](b_dll_ordinals.c) | **Byte-verified ordinal-only stub** matching Nov 20 2026 `b.dll` (5 unnamed ordinals at verified RVAs). Build standalone to produce a `b.dll` replacement. |
+| [`b_dll_ordinals.def`](b_dll_ordinals.def) | `.def` for the ordinal-only stub — produces a DLL with 5 `NONAME` exports exactly matching the real agent's export table layout. |
 | [`build.bat`](build.bat) | MSVC build script. |
+
+## Companion PoCs
+
+The stub in this directory replaces the client-side EOS SDK DLL. For complete on-host emulation:
+
+- [`../eac-service-emu/`](../eac-service-emu/) — service emulator (`EasyAntiCheat_EOSSys`), pipe server, named events, shared memory, 23× `ErrRpt_*` registry values, 7× setup CLI subcommands.
+- [`../eac-launcher-wrapper/`](../eac-launcher-wrapper/) — replacement for `a.dll` (launcher wrapper) with 5 named exports `a,b,c,d,e` matching Nov 20 2026 byte layout.
+
+All three PoCs together recreate the on-host stack. Server-side gate (Epic + EAC backend) still rejects — see [`../../docs/15-protocol-recreation.md`](../../docs/15-protocol-recreation.md) Part 13 for the hard limit.
 
 ---
 

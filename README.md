@@ -33,6 +33,7 @@ Current-build era: **late-2026** (EAC agent `EAC_2026_*`, EAC driver v3.2.0.0 No
 | 12 | [Cheat detection surface](docs/12-cheat-detection.md) | What EAC flags across every cheat category. Kernel drivers, injection indicators, hooking patterns, process manipulation catalog (14 techniques), hypervisor cheats with EPT page splitting, SMM, UEFI bootkits (BlackLotus, CosmicStrand), DMA hardware (Screamer tier, PCILeech, MemProcFS), kmbox, GPU-executed cheats. Real published EAC exploits. BYOVD history. **Everything cheat-side.** |
 | 13 | [EAC emulation + live-server bypass reality](docs/13-eac-emulation.md) | Why live-server bypass is cryptographically hard (full signature chain analysis). What real private-server projects do (Project Reboot catalog, service mock list). Three emulator architectures compared. Working PoC. **Everything emulation-side.** |
 | 14 | [Workflow, checklist, audit](docs/14-workflow-and-checklist.md) | Day-by-day reversal plan, environment setup, tooling, verification checklist, and audit of specific claims in earlier docs. |
+| 15 | [Protocol recreation dossier](docs/15-protocol-recreation.md) | **Recreate-level dossier.** Byte-verified export tables for `a.dll` + `b.dll`, full IPC surface, 23× `ErrRpt_*` registry schema, 7× setup CLI, EventLog subscription mechanism, telemetry upload channels + event names, PKI chain, agent error enum, 15-DLL dependency graph, binary-offset quick reference. **Enough to rebuild the on-host stack from scratch.** |
 
 ### Real-world artifact analysis
 
@@ -47,7 +48,11 @@ Three different emulator / bypass architectures, analyzed from actual binaries +
 
 ### Code
 
-- [`poc/eac-emu-stub/`](poc/eac-emu-stub/) — compilable stub `EasyAntiCheat_x64.dll` that satisfies a game's EAC integration without running checks. Useful for offline / private-server / modding work. **Does not bypass live-server session signing.**
+Three composable on-host emulation stubs. Together they stand up the full local stack (minus the kernel driver, which is covered in doc 02). **None bypass server-side session signing** — see doc 15 Part 13.
+
+- [`poc/eac-emu-stub/`](poc/eac-emu-stub/) — compilable stub `EasyAntiCheat_x64.dll` (client-side EOS SDK + byte-verified `b.dll` 5-ordinal shape at RVAs `0x4FEA3 / 0x22DE30 / 0x30A0E0 / 0x4FCE2 / 0x2F2760`).
+- [`poc/eac-service-emu/`](poc/eac-service-emu/) — service emulator (`EasyAntiCheat_EOSSys`). Pipe server, 3 named events, 64 KB shared memory mapping, 23× `ErrRpt_*` registry baseline, TPM status stubs, all 7 setup CLI subcommands.
+- [`poc/eac-launcher-wrapper/`](poc/eac-launcher-wrapper/) — launcher wrapper replacement (`a.dll`). 5 named exports `a,b,c,d,e` matching byte-verified Nov 20 2026 ordinal layout.
 
 ### Raw originals
 

@@ -1,0 +1,18 @@
+; b_dll_ordinals.def
+;
+; Standalone .def for building ONLY the b.dll ordinal-shape stub.
+; Produces a DLL with internal name "b.dll" and 5 unnamed ordinals
+; matching the byte-verified Nov 20 2026 Fortnite EAC agent layout.
+;
+; Build:
+;   cl /LD /O2 b_dll_ordinals.c /Fe:b.dll /link /DEF:b_dll_ordinals.def kernel32.lib
+;
+; Then rename to the random 16-hex-char name the real agent gets dropped as.
+
+LIBRARY b
+EXPORTS
+    b_dll_ord1_init    @1 NONAME
+    b_dll_ord2_begin   @2 NONAME
+    b_dll_ord3_poll    @3 NONAME
+    b_dll_ord4_end     @4 NONAME
+    b_dll_ord5_regcb   @5 NONAME
