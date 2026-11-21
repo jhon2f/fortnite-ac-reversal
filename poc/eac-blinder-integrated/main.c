@@ -327,6 +327,7 @@ static VOID DeleteControlDevice(VOID)
  * is documented idempotent. */
 static VOID RollbackInstalledSubsystems(PBLINDER_CTX ctx)
 {
+    (VOID)ResponseFaker_Uninstall(ctx);
     (VOID)VadFilter_Uninstall(ctx);
     (VOID)Etwti_Uninstall(ctx);
     (VOID)ObCallback_Uninstall(ctx);
@@ -469,6 +470,14 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg_path)
         goto fail_rollback;
     }
 
+    status = ResponseFaker_Install(&g_blinder);
+    if (!NT_SUCCESS(status)) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                   "[blinder] ResponseFaker_Install soft-failed: 0x%x\n",
+                   status);
+        /* Non-fatal -- partial fakers still help; continue init. */
+    }
+
     /* ---------------- 6. create user-mode control device -------------- */
     status = CreateControlDevice(drv);
     if (!NT_SUCCESS(status)) {
@@ -498,8 +507,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg_path)
     }
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
-               "[blinder] integrated init complete -- active mask=0x%x\n",
-               (ULONG)ctx->active);
+               "[blinder] integrated init complete v0.3 — active mask=0x%x\n",
+               g_blinder.active);
     return STATUS_SUCCESS;
 
 fail_rollback:

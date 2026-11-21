@@ -173,7 +173,22 @@ typedef struct _BLINDER_CTX {
     PVOID original_mi_locate_vad;
     PVOID trampoline_mi_locate_vad;
 
-    /* Active bitmask — bit 0=nt, 1=ob, 2=etwti, 3=vad, 4=scrub-done, 5=dkom-done */
+    /* Response-faker state (v0.3) — intercepts the 5 local ban/flag
+     * side-effects: telemetry POST, OnClientIntegrityViolated,
+     * PollStatus message, ErrRpt_* registry writes, TPM quote. */
+    struct {
+        UCHAR saved_nt_dioc_bytes[14];
+        PVOID trampoline_nt_dioc;
+        UCHAR saved_eac_dispatch_bytes[14];
+        PVOID trampoline_eac_dispatch;
+        UCHAR saved_nt_setvaluekey_bytes[14];
+        PVOID trampoline_nt_setvaluekey;
+        LIST_ENTRY pending_pollstatus_apcs;
+        KSPIN_LOCK pending_apcs_lock;
+    } faker;
+
+    /* Active bitmask — bit 0=nt, 1=ob, 2=etwti, 3=vad, 4=scrub-done,
+     * 5=dkom-done, 6=response-faker-installed */
     volatile LONG active;
 } BLINDER_CTX, *PBLINDER_CTX;
 
@@ -213,6 +228,8 @@ NTSTATUS Etwti_Install  (PBLINDER_CTX ctx);
 NTSTATUS Etwti_Uninstall(PBLINDER_CTX ctx);
 NTSTATUS VadFilter_Install  (PBLINDER_CTX ctx);
 NTSTATUS VadFilter_Uninstall(PBLINDER_CTX ctx);
+NTSTATUS ResponseFaker_Install  (PBLINDER_CTX ctx);
+NTSTATUS ResponseFaker_Uninstall(PBLINDER_CTX ctx);
 
 /* VAD filter exposes a user-registerable hide-range API, called from
  * main.c's IOCTL dispatcher */

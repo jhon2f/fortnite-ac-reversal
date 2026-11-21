@@ -1,6 +1,18 @@
 # `eac-blinder-integrated` — RAGE-integrated EAC blinder
 
-This is the **v0.2 blinder**: `v0.1 eac-kernel-blinder` (4 counter-hooks) + RAGE loader's forensic scrub + DKOM self-hide, all in one `.sys` file designed to be manual-mapped by the RAGE mapper (or any MSR-LSTAR / BYOVD manual-mapper using LnvMSRIO.sys / CVE-2025-8061).
+This is the **v0.3 blinder**: `v0.1 eac-kernel-blinder` (4 counter-hooks) + RAGE loader's forensic scrub + DKOM self-hide + **response_faker** (local ban suppression), all in one `.sys` file designed to be manual-mapped by the RAGE mapper (or any MSR-LSTAR / BYOVD manual-mapper using LnvMSRIO.sys / CVE-2025-8061).
+
+**v0.3 additions over v0.2:** `response_faker.c` intercepts the 5 local side-effects that happen when EAC decides to ban or flag you:
+
+| Side-effect | Interception |
+|-|-|
+| Telemetry POST to `api.epicgames.dev` | `NtDeviceIoControlFile` hook drops AFD sends matching `/sdkevents`, `/eteventstream`, `AppID=EOSSDK.AntiCheatExt.*`, `AppID=easyanticheat` |
+| `OnClientIntegrityViolated` callback → game disconnect | Pattern-scan EAC agent dispatch, inline-hook to short-circuit when violation flag set |
+| `EOS_AntiCheatClient_PollStatus` returning ban msg | Deferred user-mode patch of EOS SDK export in Fortnite (PsCreateProcess notify) → always returns EOS_NOT_FOUND |
+| `ErrRpt_*` registry writes recording violation | `NtSetValueKey` hook rewrites violation-flavored values to clean (QuoteKeyStatus→1, ErrRpt_GameState→0, GameCrash→0) |
+| TPM quote request | Documented in README; faker stub ready to extend |
+
+Active bitmask bit 6 (0x40) reports response_faker installed.
 
 **This is what you build + test.** Replaces `eac-kernel-blinder` for Fortnite use.
 
@@ -18,18 +30,19 @@ This integrated version fixes both. The RAGE loader's `rage_drv.sys` architectur
 
 ---
 
-## File layout (3,892 total lines)
+## File layout (5,100+ total lines)
 
 ```
 poc/eac-blinder-integrated/
-├── blinder.h           236  shared types, EAC targets, 8-needle scrub list
-├── main.c              515  DriverEntry orchestration + IOCTL dispatch
+├── blinder.h           240+ shared types, EAC targets, 8-needle scrub list
+├── main.c              515+ DriverEntry orchestration + IOCTL dispatch
 ├── forensic_scrub.c    762  PiDDB/MmUnloaded/ci-hash/ETW-ring scrub
 ├── dkom_hide.c         446  self-hide with inverted function table
 ├── nt_hooks.c          411  NtReadVM/MmCopyVM inline hooks
 ├── ob_callback.c       285  ObRegisterCallbacks alt 395000
 ├── etwti.c             378  ETW-TI mute (consolidates with scrub)
 ├── vad_filter.c        349  MiLocateVad hook + hide-range table
+├── response_faker.c   1225  v0.3 — intercepts the 5 local ban side-effects
 ├── utils.c             337  kernel resolution + caller identity
 ├── loader_example.c    173  user-mode IOCTL control
 ├── build.bat            54  WDK 10 + VS 2022 build

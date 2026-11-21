@@ -34,7 +34,7 @@ set LIBS="%WDK_LIB%\km\x64\ntoskrnl.lib" "%WDK_LIB%\km\x64\hal.lib" "%WDK_LIB%\k
 set CFLAGS=/nologo /c /O2 /W3 /kernel /GS- /Zc:wchar_t /D_WIN64 /D_AMD64_ /DAMD64 /D_X86_AMD64_ /DWIN32_LEAN_AND_MEAN /D_WINNT
 set CFLAGS=%CFLAGS% /D__INTRINSIC_GROUP_WIN_BASE=1
 
-for %%f in (main.c forensic_scrub.c dkom_hide.c nt_hooks.c ob_callback.c etwti.c vad_filter.c utils.c) do (
+for %%f in (main.c forensic_scrub.c dkom_hide.c nt_hooks.c ob_callback.c etwti.c vad_filter.c response_faker.c utils.c) do (
     echo [cl] %%f
     cl %CFLAGS% %INCLUDES% %%f
     if errorlevel 1 (
@@ -47,7 +47,7 @@ set LDFLAGS=/nologo /DRIVER /ENTRY:DriverEntry /SUBSYSTEM:NATIVE,10.0 /NODEFAULT
 set LDFLAGS=%LDFLAGS% /RELEASE /OPT:REF,ICF /MACHINE:X64 /STACK:0x40000,0x1000 /ALIGN:0x1000
 
 echo [link] rage_drv.sys
-link %LDFLAGS% main.obj forensic_scrub.obj dkom_hide.obj nt_hooks.obj ob_callback.obj etwti.obj vad_filter.obj utils.obj %LIBS% /OUT:rage_drv.sys
+link %LDFLAGS% main.obj forensic_scrub.obj dkom_hide.obj nt_hooks.obj ob_callback.obj etwti.obj vad_filter.obj response_faker.obj utils.obj %LIBS% /OUT:rage_drv.sys
 if errorlevel 1 (
     echo LINK FAILED
     exit /b 1
