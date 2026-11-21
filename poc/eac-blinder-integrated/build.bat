@@ -64,6 +64,21 @@ del /q *.obj 2>nul
 del /q rage_drv.exp 2>nul
 del /q rage_drv.lib 2>nul
 
+rem --- CRITICAL: strip .pdata data directory ------------------------------
+rem BSOD 0xE4 root cause: RAGE mapper calls nt!RtlInsertInvertedFunctionTable
+rem on any payload with .pdata, inserting an entry that corrupts kernel
+rem exception-unwind path → doubled worker item → bugcheck. Fix: zero
+rem OptionalHeader.DataDirectory[3] so the mapper's directory read
+rem returns 0 and it skips the RIFT call.
+echo [strip_pdata] patching rage_drv.sys
+where python >nul 2>&1 && (
+    python strip_pdata.py rage_drv.sys
+) || (
+    where py >nul 2>&1 && py strip_pdata.py rage_drv.sys || (
+        echo WARNING: python not found — rage_drv.sys WILL CRASH if mapper calls RIFT
+    )
+)
+
 echo.
 echo Built rage_drv.sys
 dir /b rage_drv.sys
