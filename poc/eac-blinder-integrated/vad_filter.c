@@ -85,6 +85,18 @@ NTSTATUS VadFilter_AddHiddenRange(PVOID start, SIZE_T size)
     return status;
 }
 
+/* Clear the hide-range table (user-mode IOCTL + unload path). */
+VOID VadFilter_ClearHiddenRanges(VOID)
+{
+    KLOCK_QUEUE_HANDLE lh;
+    KeAcquireInStackQueuedSpinLock(&g_hide_range_lock, &lh);
+    RtlZeroMemory(g_hide_ranges, sizeof g_hide_ranges);
+    g_hide_range_count = 0;
+    KeReleaseInStackQueuedSpinLock(&lh);
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] VadFilter: hide-range table cleared\n");
+}
+
 /* -------------------------- inline-hook plumbing ------------------------ */
 
 /* x64 absolute jump: mov rax, imm64 ; jmp rax — 12 bytes total. */

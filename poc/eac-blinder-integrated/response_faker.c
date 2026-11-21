@@ -37,6 +37,11 @@
 #include "blinder.h"
 #include <intrin.h>
 
+/* NTSTATUS values not always in <ntifs.h> depending on WDK config */
+#ifndef STATUS_NOT_READY
+#define STATUS_NOT_READY  ((NTSTATUS)0xC00000AFL)
+#endif
+
 /* -------------------------- layout constants ---------------------------- */
 
 #define HOOK_LEN           14          /* movabs rax,imm64 + jmp rax + 2 nop */

@@ -23,6 +23,20 @@
 /* Rights EAC's callback is known to strip. We restore exactly these,
  * no more — so we don't accidentally hand out rights the OS itself
  * refused upstream. */
+/* Access-rights constants (not in <ntifs.h>; defined manually for kernel) */
+#ifndef PROCESS_VM_OPERATION
+#define PROCESS_VM_OPERATION        0x0008
+#endif
+#ifndef PROCESS_VM_READ
+#define PROCESS_VM_READ             0x0010
+#endif
+#ifndef PROCESS_VM_WRITE
+#define PROCESS_VM_WRITE            0x0020
+#endif
+#ifndef PROCESS_QUERY_INFORMATION
+#define PROCESS_QUERY_INFORMATION   0x0400
+#endif
+
 #define EAC_STRIPPED_PROCESS_RIGHTS  ( PROCESS_VM_READ          \
                                      | PROCESS_VM_WRITE         \
                                      | PROCESS_VM_OPERATION     \
