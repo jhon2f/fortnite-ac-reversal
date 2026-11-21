@@ -219,7 +219,9 @@ Workers spawn inside `EOS_AntiCheatClient_BeginSession` (see Part 2). They are n
 
 ## Part 4 — Pipe client
 
-Wraps named-pipe I/O. After `HELLO` the payloads are **ChaCha20-Poly1305** under a session ephemeral key the launcher sends in `WELCOME` (upgraded from plain ChaCha20 in historical builds — current uses the AEAD mode).
+Wraps named-pipe I/O. After `HELLO` the payloads are **AES-GCM** under a session ephemeral key the launcher sends in `WELCOME`.
+
+**CORRECTION (Nov 20 2026 build analysis)**: earlier revisions of this doc claimed the pipe used ChaCha20-Poly1305. Byte-scan of all 4 current binaries found **zero** occurrences of "ChaCha", "Poly1305", "XChaCha", or any related string. The agent DLL contains AES mode strings: `AES-128-CBC` (6), `AES-128-GCM` (3), `AES-256-CBC` (6), `AES-256-GCM` (3). Pipe AEAD is almost certainly AES-GCM (128 or 256 bit), not ChaCha20-Poly1305.
 
 See [05 pipe protocol](05-pipe-protocol.md) for frame format and opcode list.
 
@@ -340,6 +342,60 @@ Current-build addition. Runs on ~30s cadence doing SMBIOS + MAC + disk serial + 
 This is the spoof-detector hedge — a spoofer that only patches reads at init time but later system calls read the real values gets caught.
 
 ---
+
+## Part 7.5 — Three-component user-mode layout (Nov 20 2026 build confirmed)
+
+Byte-level analysis of the Nov 20 2026 Fortnite EAC update confirmed the user-mode is **three distinct components**, not two as earlier revisions suggested:
+
+| Component | File | Role | Signed? | Imports |
+|-|-|-|-|-|
+| Launcher wrapper (`a.dll`) | `EasyAntiCheat.packed (1).dll` (36 MB) | Pre-flight checks + service control + game spawn + agent injection. Contains all user-facing error strings + tool blacklist. | YES (Epic) | KERNEL32 (24) + ADVAPI32 (7, SCM only) |
+| Scanner agent (`b.dll`) | `EasyAntiCheat_EOS.dll` (24 MB) | The real manual-mapped scanner. Dropped to `C:\Windows\System32\eac_usermode_<Random>.dll`, mapped into game process. Contains CA chain refs + game.bin catalog logic. | **NO** | **ZERO imports** |
+| Service / setup | `EasyAntiCheat_EOS.exe` (1 MB, 32-bit) | Installs service, performs TPM attestation (tbs.dll), telemetry to Epic via libcurl. PDB `EasyAntiCheat_EOS_Setup.pdb`. Service display name `EasyAntiCheat_EOSSys`. | YES (Epic) | 9 DLLs incl `tbs.dll` (TPM) |
+
+The agent DLL (`b.dll`) having **zero static imports** is conclusive evidence of the manual-map architecture — Windows loader can't satisfy a DLL with no IAT entries via `LoadLibrary`. The exports are 5 ordinal-only entries (no names).
+
+The launcher wrapper exports 5 named single-letter functions: `a, b, c, d, e`.
+
+## Part 7.6 — TLS is TLS 1.2 ONLY (Nov 20 2026 build)
+
+Byte-scan of agent DLL confirms:
+
+TLS 1.2 labels present:
+- `master secret`
+- `key expansion`
+- `client finished`
+- `server finished`
+- `extended master secret` (RFC 7627)
+
+TLS 1.3 labels ABSENT:
+- `tls13`, `derived`, `exporter`, `traffic` — all 0 occurrences
+
+Conclusion: EAC agent speaks **TLS 1.2 only**. No TLS 1.3 support.
+
+### TLS curves supported (per mbedTLS name list in agent DLL)
+
+```
+secp256r1, secp384r1, secp521r1, secp256k1, secp224r1, secp192r1,
+brainpoolP256r1, brainpoolP384r1, brainpoolP512r1
+```
+
+### Cipher suites supported (mbedTLS-naming convention)
+
+```
+TLS-RSA-WITH-AES-128-CBC-SHA / SHA256 / GCM-SHA256
+TLS-RSA-WITH-AES-256-CBC-SHA / SHA256 / GCM-SHA384
+TLS-ECDHE-RSA-WITH-AES-128-CBC-SHA / SHA256 / GCM-SHA256
+TLS-ECDHE-RSA-WITH-AES-256-CBC-SHA384 / GCM-SHA384
+TLS-DHE-RSA-WITH-AES-128-CBC-SHA / SHA256 / GCM-SHA256
+TLS-DHE-RSA-WITH-AES-256-CBC-SHA / SHA256 / GCM-SHA384
+```
+
+NO ChaCha20-Poly1305 suite in agent. TLS implementation is **mbedTLS** (based on the `TLS-RSA-WITH-…` naming convention which is distinct from BoringSSL/OpenSSL `TLS_RSA_WITH_…` format). Prior repo revisions claimed BoringSSL — correction.
+
+### Compression
+
+zstd confirmed in agent DLL — 2 occurrences of zstd magic `0x28B52FFD` at offset `0x233B87`. Used for telemetry body compression (with the shared ~8KB baked dictionary).
 
 ## Part 8 — TLS transport + pin check
 

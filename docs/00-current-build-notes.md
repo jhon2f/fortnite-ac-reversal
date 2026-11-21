@@ -1,8 +1,27 @@
 # 00 — Current-build notes + Fortnite EAC history
 
-Changelog from historical EAC (2018 Fortnite integration) to what's shipping on current Fortnite builds (late-2026, agent version strings around `EAC_2026_*`). Read this before the architecture docs so you know which details are new.
+Changelog from historical EAC (2018 Fortnite integration) to what's shipping on current Fortnite builds (**late-2026 / Nov 20 2026 build**). Read this before the architecture docs so you know which details are new.
 
 Includes Fortnite-specific EAC history (BattlEye → dual-stack → EAC-only → EAC-EOS).
+
+---
+
+## Nov 20 2026 build fingerprint
+
+| Artifact | Size | SHA256 | PE timestamp |
+|-|-|-|-|
+| `EasyAntiCheat_EOS.sys` (kernel driver) | 46,171,808 | `3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b` | 2026-11-17 05:36:29 |
+| `EasyAntiCheat_EOS.dll` (real scanner, `b.dll`, **UNSIGNED**, zero imports) | 24,245,760 | `c4d06ee450c2770588416228a5692265c68e9ae7cb199b19c19c8af8784b5dc0` | 2026-11-17 13:34:50 |
+| `EasyAntiCheat.packed (1).dll` (launcher wrapper, `a.dll`) | 36,403,128 | `28b0756d2be21386ae826511deafec906976cf7e10db6e34856ad3b863ecd6e7` | 2026-11-17 13:40:14 |
+| `EasyAntiCheat_EOS.exe` (service/setup, 32-bit) | 1,041,336 | `0bbe6d48f45fc155f1c1d029df8de67f221b7329010164eda2dd06d7978340b9` | 2026-09-09 14:20:48 |
+
+Signing cert (sys + exe + packed-dll):
+- Thumbprint: `3CD980E3BACD8FB6FB3F532AFF62753FB7DE47A8`
+- Issued by: DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
+- Valid: 2026-02-01 → 2029-02-01
+- Subject: `CN=Epic Games Inc., O=Epic Games Inc., L=Cary, S=North Carolina, C=US`
+
+> **CORRECTION**: Earlier revisions of this repo attributed hash `0bbe6d48...340b9` to "the driver v3.2.0.0" (per MinaMeow). That hash is actually the **service EXE**, not the driver. MinaMeow mislabeled her own file. The real driver (now 46 MB in current build) has hash `3eabcfe9...5d2b`.
 
 ---
 
@@ -35,10 +54,36 @@ The dual-stack period (2018-2021) was unusual — both ACs ran in parallel. Each
 - **`PsSetCreateProcessNotifyRoutineEx2` on win11 23H2+.** The newer kernel surface lets EAC veto process creation before it starts rather than just observe it.
 - **ObRegisterCallbacks altitude moved.** Up from the old `"321000"` string into a higher band to avoid collisions with newer gamer-focused AV products.
 
-### Crypto
+### Crypto (CORRECTED Nov 20 2026)
 
-- **rules.bin moved from AES-128-CBC to AES-256-GCM.** Key derivation is still HKDF-SHA256 but with a longer output and a different `info` string.
-- **Signature outside the ciphertext changed from RSA-PSS to Ed25519.** Smaller sig (64 bytes vs 256), same guarantee, faster verify.
+Previous revisions of this doc claimed Ed25519 signatures and ChaCha20-Poly1305 for the pipe. **Byte-scan of the Nov 20 2026 build shows neither is present anywhere.** No Ed25519 OID, no ChaCha20 strings, no Poly1305 strings in any of the 4 binaries.
+
+Actual crypto surface in current build:
+
+- **Signatures**: RSA (12 RSA public-key OIDs embedded in driver; 24 RSA references in service). ECDSA with secp256r1 or brainpool curves via NCrypt (`CALG_ECDSA` in service). SHA256 / SHA384 hashes. No Ed25519.
+- **Symmetric encryption**: AES-128/256 in CBC or GCM mode (`AES-128-CBC`, `AES-128-GCM`, `AES-256-CBC`, `AES-256-GCM` all present in agent DLL). Pipe encryption is almost certainly AES-GCM, not ChaCha20-Poly1305.
+- **TLS**: TLS 1.2 ONLY. Agent DLL contains TLS 1.2 labels ("master secret", "key expansion", "client finished", "server finished", "extended master secret"). No TLS 1.3 labels anywhere.
+- **TLS curves supported**: secp256r1, secp384r1, secp521r1, secp256k1, secp224r1, secp192r1, brainpoolP256r1, brainpoolP384r1, brainpoolP512r1.
+- **Compression**: zstd confirmed in agent DLL (2 magic-byte occurrences). Oodle statically linked in launcher wrapper (full codec set: Kraken, Selkie, Mermaid, Leviathan, Hydra, BitKnit, LZB16, LZBLW, LZHLW, LZNA, LZNIB).
+- **Hashing** (for internal integrity / dispatch): see hash-algorithm section below.
+
+### Hash-dispatch algorithm CHANGED
+
+Previous builds (MinaMeow v3.2.0.0) used splitmix64 finalizer constant `0x9E3779B185EBCA87` — 1071 sites in driver.
+
+**New driver (Nov 17 2026, v3.3+) uses a MurmurHash3-style finalizer constant**:
+
+```
+0xFF51AFD7ED558CCD — 1176 sites in driver .text
+```
+
+SplitMix64's `0x9E3779B185EBCA87` has **0** occurrences in the new driver. The hash-dispatch algorithm itself was rotated. Hash-reverse tables derived against MinaMeow's constants will no longer work — new tables must be built against `0xFF51AFD7ED558CCD`.
+
+MurmurHash3's second finalizer constant `0xC4CEB9FE1A85EC53` is NOT present — EAC uses a custom finalizer with just the first multiplier. "SplitMix-variant with MurmurHash3's first multiplier" is the characterization.
+
+Agent DLL (`b.dll`) still has 4 sites of the old splitmix64 constant — different hash functions per module.
+
+Record walker magic rotated too: old `0xE7AECCAE` and multiplier `-0x5163F18C` both have 0 occurrences. New magic not yet identified.
 
 ### Scanners
 
@@ -51,10 +96,76 @@ The dual-stack period (2018-2021) was unusual — both ACs ran in parallel. Each
 ### Telemetry
 
 - **All transport consolidated to `api.epicgames.dev`.** Legacy `service.easyanticheat.net` endpoints resolve but return 410.
-- **AEAD on the pipe.** Chacha20-Poly1305 replaced plain Chacha20.
-- **Compression with a baked dictionary.** Telemetry body is zstd with a shared dictionary (~8 KB) baked into the agent DLL.
+- **~~AEAD on the pipe (ChaCha20-Poly1305)~~** — CORRECTED Nov 20 2026: no ChaCha20 or Poly1305 present in any binary. Pipe is almost certainly AES-GCM (both AES-128-GCM and AES-256-GCM present in agent DLL strings).
+- **Compression with a baked dictionary.** Telemetry body is zstd — confirmed by zstd magic bytes (0x28B52FFD) at agent DLL offset 0x233B87.
 - **New flag family `0x1Cxx` — environmental fingerprint anomalies.**
 - **Daily correlation cadence.** Ban waves still exist but shortened from weekly to daily. High-severity flag chains trigger near-realtime bans.
+
+### Nov 20 2026 build — launcher wrapper (packed.dll) NEW pre-flight blocks
+
+The launcher wrapper (`EasyAntiCheat.packed (1).dll`, 36 MB) performs pre-flight environment checks before game launch. New error keys in this build (not present in prior builds):
+
+- `error_dtrace_enabled` — Windows Dynamic Tracing (DTrace) must be off
+- `error_dotlocal` — DotLocal DLL redirection must not be present (anti-hijack)
+- `error_patched_boot_loader` — UEFI boot loader (bootmgr/winload) integrity — detects BlackLotus-class bootkits
+- `error_missing_secure_core_feature` — Windows 11 Secure-Core feature required on compatible hardware
+- `error_unsupported_arm64` — ARM64 Windows explicitly not supported
+- `error_win10_22h2_required` — minimum OS raised to Windows 10 22H2
+- `error_unrecognized_blacklisted_driver` — generic unrecognized driver category
+- `error_kernel_modified` — PatchGuard-equivalent kernel integrity check
+- `error_driver_verifier_enabled` — Driver Verifier running → block
+- `error_case_sensitive_game_path` — per-directory case-sensitivity (NTFS modern feature) blocks
+
+### Nov 20 2026 build — NEW tool/driver blacklist (plaintext in packed.dll)
+
+Explicit named-tool blocks that fire in pre-flight. Every entry is a literal byte-string match:
+
+**Anti-cheat conflicts** (refuses to run alongside):
+- BattlEye, ACE-BASE (Chinese AC), EchoAC (Chinese AC), MyhProt2
+
+**Cheat / cheat-dev tools:**
+- Cheat Engine, Xenos Injector, HideToolz, Global Hack, Iuebesks
+
+**Reverse-engineering / debug tools:**
+- WinDbg, LiveKD, PCHunter64, PowerTool X64, WIN64AST (Chinese RE suite), Windows Kernel Explorer, BlEM, CAIs, WinD64, TermDD
+
+**System / BYOVD-source tools:**
+- CPU-Z (BYOVD source — cpuz141.sys / cpuz149.sys), WinIO (BYOVD), RWDrv (BYOVD), WinPmem (memory forensics driver), WinDivert (packet filter driver)
+
+**Streaming / overlays:**
+- Moonlight Engine (NVIDIA GameStream FOSS clone)
+
+**Exploit variant fingerprints:**
+- "SMEP Bypass (B)", "SMEP Bypass (C)" — specific SMEP bypass code variants detected by name
+
+### Nov 20 2026 build — New EAC concepts (missing from prior docs)
+
+**EAC's own private PKI — "Anti-Cheat Integrity CA"**
+
+Agent DLL contains strings for an internal CA chain:
+- `Anti-Cheat Integrity CA11` (root)
+- `Anti-Cheat Integrity Intermediate CA1`
+- `Anti-Cheat Integrity Intermediate CA10`
+
+EAC runs its own CA independent of Microsoft WDAC. Used for signing internal artifacts (game catalogs, pushed scanner modules, server-session attestations). Error string `"EAC index certificate revoked"` confirms EAC maintains its own cert revocation.
+
+**Per-game `game.bin` hash catalog**
+
+Agent DLL contains strings referencing a `game.bin` file. Semantic: per-game hash catalog shipping with each title, signed by EAC's Anti-Cheat Integrity CA. Lists expected hashes for game files. Scanner validates every game file against it at launch. Errors:
+- `game_error.error_catalogue_corrupted`
+- `game_error.error_catalogue_not_found`
+- `game_error.executable_not_hashed`
+- `"Unknown game file"`
+- `"Untrusted system file"`
+
+### Nov 20 2026 build — kernel driver structural deltas vs v3.2.0.0
+
+- `.text` grew ~54 KB (0x26F764 → 0x27C464)
+- Entry point RVA moved (0x26F738 → 0x27C438)
+- Monster section (VM/handler blob) grew ~6.5 MB (0x2316000 → 0x28B9000)
+- Manifest tag block offset moved (0x2CE200 → 0x303530)
+- Manifest tag count 46 → 45 (`IZ` tag removed)
+- `.pdata` grew by ~3056 bytes → more `RUNTIME_FUNCTION` entries (more functions in driver)
 
 ### Remote scanner loading
 

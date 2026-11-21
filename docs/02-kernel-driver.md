@@ -2,22 +2,42 @@
 
 The trust root. The user-mode agent could be lied to by anything in userspace, so EAC's design is "whenever something is security-sensitive, ask the driver." The driver observes the system through legal kernel callback APIs — no inline hooking of ntoskrnl, no SSDT shenanigans, nothing PatchGuard would blow up on — and the user-mode agent is really a reporting agent that bubbles the driver's observations to Epic's backend.
 
-This doc is **the complete kernel-side reversal.** Byte-level offsets, every callback, every IOCTL, the ETW-TI subscription, the hash-dispatched API resolver, the flattened command dispatcher, the 46-module manifest. If something lives in kernel memory, it's catalogued here.
+This doc is **the complete kernel-side reversal.** Byte-level offsets, every callback, every IOCTL, the ETW-TI subscription, the hash-dispatched API resolver, the flattened command dispatcher, the 46→45 module manifest. If something lives in kernel memory, it's catalogued here.
 
 ---
 
 ## Part 1 — The binary itself
 
-### Build fingerprint (verified against UC community teardown — MinaMeow, Nov 2026)
+### Build fingerprint
+
+Current build (Nov 20 2026 Fortnite update, driver PE-timestamp Nov 17 2026):
 
 ```
-Driver version : 3.2.0.0
+File size      : 46,171,808 bytes (~46 MB on disk)
+Sections       : 9 (unchanged from v3.2.0.0)
+Entry point    : 0x27C438 (moved from 0x26F738 in v3.2.0.0)
+ImageBase      : 0x140000000
+SHA256         : 3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b
+PE timestamp   : 2026-11-17 05:36:29 UTC
+Signer         : Epic Games Inc.
+Sign thumbprint: 3CD980E3BACD8FB6FB3F532AFF62753FB7DE47A8
+Sign CA        : DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
+Cert validity  : 2026-02-01 → 2029-02-01
+Imports        : ONE — FLTMGR.SYS!FltRegisterFilter (never called, load-order hint only)
+```
+
+Reference prior build (MinaMeow's analysis, UC thread 781475, Nov 14 2026):
+
+```
+Driver version : v3.2.0.0 (per MinaMeow — note she pasted the SERVICE EXE hash,
+                 not the driver hash, in her post — the hash 0bbe6d48...340b9 is
+                 actually EasyAntiCheat_EOS.exe, not the driver)
 File size      : 40,189,592 bytes
-SHA256         : 0bbe6d48f45fc155f1c1d029df8de67f221b7329010164eda2dd06d7978340b9
-Signer         : Epic Games Inc. via DigiCert Trusted G4 chain
-Sign timestamp : Nov 2025
+Entry point    : 0x26F738
 Source thread  : https://www.unknowncheats.me/forum/anti-cheat-research/781475-reversal-eac-detection-dma-driver-hwid-collection.html
 ```
+
+**Growth Nov 20 2026 vs v3.2.0.0**: +~6 MB file, +~54 KB `.text`, +~6.5 MB monster section.
 
 ### Layout (current-build teardown)
 
@@ -115,22 +135,26 @@ Appears exactly once in the whole 40 MB. Runs callback logic on a caller-supplie
 0x23B9D7  C3            ret
 ```
 
-### 2.c — The hash mix (splitmix64 finalizer)
+### 2.c — The hash mix (CHANGED in Nov 20 2026 build)
 
-Same **64-bit golden-ratio constant** everywhere, 1071 sites in code:
+**Old build (MinaMeow v3.2.0.0)**: splitmix64 finalizer, constant `0x9E3779B185EBCA87`, 1071 sites.
 
-```
-0x9E3779B185EBCA87
-```
+**New build (Nov 20 2026)**: MurmurHash3-style finalizer, constant `0xFF51AFD7ED558CCD`, 1176 sites in driver `.text`. `0x9E3779B185EBCA87` has **0 occurrences** in the new driver.
 
-Also shows up negated `-0x61C8864E7A143579`. Same bits. splitmix64 finalizer (Vigna 2015).
+Only the FIRST MurmurHash3 finalizer multiplier is present — MurmurHash3's second `0xC4CEB9FE1A85EC53` has 0 sites. EAC uses a custom finalizer with just the one multiplier. "SplitMix-variant with MurmurHash3's first constant" is the right characterization.
+
+**Impact**: hash-reverse tables derived against MinaMeow's splitmix64 constant are now invalid for the driver. New tables must be built against `0xFF51AFD7ED558CCD`.
+
+Note: the user-mode agent DLL (`b.dll`) still has 4 sites of the old `0x9E3779B185EBCA87` — different hash functions per module.
 
 Pattern:
+
+**Old build (MinaMeow v3.2.0.0) pattern:**
 
 ```asm
 0x214A7   shl  rdi, 0x1a               ; (arg1 << 26) | arg2  -> packed id
 0x214AB   or   rdi, rcx
-0x214AE   movabs rax, 0x9E3779B185EBCA87
+0x214AE   movabs rax, 0x9E3779B185EBCA87     ; <-- OLD constant (splitmix64)
 0x214BB   imul rdx, rax
 0x214C2   shr  rbx, 0x20
 0x214C9   shr  rcx, 0x3c
@@ -139,6 +163,8 @@ Pattern:
 0x214D3   imul rbx, rax
 0x214D7   xor  rbx, rdi                ; = final id
 ```
+
+**New build (Nov 20 2026)** uses the same pattern with `movabs rax, 0xFF51AFD7ED558CCD` in place of the splitmix64 constant. Offsets have shifted — the pattern now lives further into the enlarged `.text` section.
 
 ### 2.d — Hash-dispatched API resolving
 
@@ -604,16 +630,24 @@ The `EPROCESS` `VadRoot` offset floats by Windows build. EAC resolves it dynamic
 
 ---
 
-## Part 10 — The 46-module manifest (plaintext tags)
+## Part 10 — The module manifest (plaintext tags)
 
-Four-char plaintext tags at `0x2CE200` (~`0xB6` bytes), with 16-byte-aligned blobs sitting right before them (one hash per module):
+Four-char plaintext tags with 16-byte blobs sitting right before them. Historically described as "one hash per module" but byte analysis of the new build shows the last few blobs contain x64 code bytes (e.g. `48 8b 00` MOV instructions), suggesting the "hashes" may actually be unrelated code tails bleeding into the tag block — this interpretation needs verification.
+
+**Offset moved in Nov 20 2026 build**: `0x2CE200` (v3.2.0.0) → `0x303530` (current).
+
+**Count 46 → 45 in current build** (`IZ` tag removed):
 
 ```
 ClfC ClfI ClfO Clfs   CM11 CM13 CM16 CM17 CM20 CM25 CM26 CM27 CM28 CM29
 CM31 CM32 CMAl CMCa CMSb CMSc   Cont Dcdd Devi EtwB   UdMI Uref UsbC
-WDIs Wdog WfpC WfpS   ViMm Nhfs   Ntf0 NtfB NtfF NtfL   Obt b PcSi Uswd
-Plcl ScCB SmBf SmMm SmMs IZ
+WDIs Wdog WfpC WfpS   ViMm Nhfs   Ntf0 NtFB NtFf NtFL   Obt b PcSi Uswd
+Plcl ScCB SmBf SmMm SmMs
 ```
+
+Note on casing: MinaMeow's post rendered the Ntf group as `NtfB NtfF NtfL`. Byte-level the tags are actually `NtFB NtFf NtFL` (capital F) across both her build and the new one. Her post had a transcription typo.
+
+Prior build also had an `IZ` tag at the end — no longer present. One manifest module got retired or merged.
 
 ### Confident mappings
 
@@ -696,17 +730,19 @@ Driver verifies, periodically:
 
 ### Driver self-sign (SELF_CHECK IOCTL)
 
-The driver signs `(hash || nonce || bootCookie)` with an **embedded ed25519 private key**. The signed blob gets forwarded to the backend, backend verifies with the corresponding public key. Fresh signatures per request (nonce + bootCookie) → no replay attacks.
+The driver signs `(hash || nonce || bootCookie)` with an **embedded RSA private key** (CORRECTED Nov 20 2026 — prior "Ed25519" claim was wrong, see below). The signed blob gets forwarded to the backend, backend verifies with the corresponding public key. Fresh signatures per request (nonce + bootCookie) → no replay attacks.
 
-### Extracting the ed25519 key (hints)
+**CORRECTION (Nov 20 2026)**: Byte-scan of the driver found 12 RSA SubjectPublicKeyInfo OID matches (`06 09 2A 86 48 86 F7 0D 01 01 01`) in `.rdata`. Zero Ed25519 OID matches (`06 03 2B 65 70`). The driver's signing path is RSA, not Ed25519. One `secp256r1` OID match at offset `0x303F8E` suggests ECDSA-P256 is also supported for alternate paths.
+
+### Extracting the RSA signing material (hints)
 
 For researchers:
 - Cross-reference from the SELF_CHECK IOCTL handler.
-- Private key is 32 bytes.
-- Public key (if present for verification) is 32 bytes immediately following.
-- Look for a 64-byte constant block in `.rdata` that's accessed only from the signing function.
+- The driver contains 12 RSA public keys embedded in `.rdata` (first @ `0x2C035B6`). These are probably: multiple Epic session-attestation pubkeys (for rotation), Anti-Cheat Integrity CA root + intermediate pubkeys, rules.bin signing pubkey, and self-check verification pubkeys.
+- The private signing key is loaded at runtime (not embedded as a plain key constant) — likely derived from the driver's TPM-sealed material or from a key the service hands over via the shared pipe.
+- Sig is likely 256 bytes (RSA-2048) or 512 bytes (RSA-4096), not 64 bytes.
 
-Even if extracted, the backend verifies the key matches the expected driver version. Rotating your signing key means Epic doesn't recognize your driver.
+Even if the key material were extracted, the backend verifies the key matches the expected driver version. Rotating your signing key means Epic doesn't recognize your driver.
 
 ---
 
@@ -804,7 +840,7 @@ Everything above is a map. The specific values you MUST pull from your own binar
 - [ ] `ObCallback` strip mask for process AND thread
 - [ ] Baked-in Epic pubkey location (for session_auth verification)
 - [ ] Baked-in Epic pubkey location (for self-check signing)
-- [ ] 46-module manifest content (should match the list in Part 10 ± version-rotations)
+- [ ] 45-tag module manifest content (46 in older builds; current is 45 after `IZ` removal — should match the list in Part 10 ± version-rotations)
 - [ ] Handler feature-flag table layout
 - [ ] Record walker magic constant
 - [ ] Oodle blob offset + size

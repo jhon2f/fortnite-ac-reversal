@@ -6,38 +6,50 @@ Loaded at agent init, decrypted, parsed into a series of sections indexed by rul
 
 ---
 
-## Header (80 bytes, current)
+## Header (reconstructed — NOT byte-verified in current build)
 
 ```c
+// APPROXIMATE / reconstructed from older RE + partial new-build analysis.
+// Exact header layout in Nov 20 2026 build has not been byte-verified.
 struct eac_rules_hdr {
-    uint32_t magic;          // 'EACR'
+    uint32_t magic;          // 'EACR' (byte-verified absent in driver; may
+                             //  live only in a shipped rules file not in
+                             //  the extracted binaries)
     uint32_t version;
-    uint8_t  iv[12];         // GCM nonce (was 16 in CBC era)
+    uint8_t  iv[12];         // GCM nonce (ASSUMED — AES-GCM is used elsewhere
+                             //  in agent, so GCM is plausible)
     uint32_t plainSize;
     uint32_t sectionCount;
-    uint8_t  tag[16];        // GCM auth tag
-    uint8_t  sig[64];        // Ed25519 signature over header_without_sig || ciphertext
+    uint8_t  tag[16];        // GCM auth tag (if GCM)
+    uint8_t  sig[?];         // RSA signature, likely 256 bytes (RSA-2048)
+                             //  or 512 bytes (RSA-4096). NOT Ed25519 (see
+                             //  correction below).
 };
 ```
 
 Ciphertext follows immediately after the header, `plainSize` bytes.
 
-### Crypto changes from historical
+### Crypto correction (Nov 20 2026)
 
-| | Historical | Current |
+Earlier revisions of this doc claimed Ed25519 signatures (64 bytes) for rules.bin. **Byte-scan of all 4 Nov 20 2026 binaries found zero Ed25519 OID matches anywhere.** The signature algorithm is **RSA** (12 RSA public-key OID matches in driver `.rdata` alone). Likely RSA-PSS with SHA256 or SHA384, matching the signing cert's SHA384 algorithm.
+
+| | Historical (reconstructed) | Current (Nov 20 2026) |
 |-|-|-|
-| Cipher | AES-128-CBC | AES-256-GCM |
-| IV / nonce | 16 bytes | 12 bytes |
-| Signature | RSA-PSS (256 bytes) | Ed25519 (64 bytes) |
-| Key derivation `info` string | `"EACRULES"` | `"EACRULES2026"` |
+| Cipher | AES-128-CBC | AES-GCM (128 or 256) — AES-GCM strings present in agent DLL |
+| IV / nonce | 16 bytes (CBC) | 12 bytes (GCM standard) |
+| Signature algorithm | RSA-PSS | **RSA** (unknown mode; probably still PSS with SHA384). **Not Ed25519** — correction landed. |
+| Signature size | ~256 bytes | Likely 256 (RSA-2048) or 512 (RSA-4096) |
+| Key derivation `info` string | `"EACRULES"` (unverified) | `"EACRULES2026"` (reconstruction — unverified against current build bytes) |
+
+The `rules.bin` / `pbrules.bin` file itself is **not present in the extracted artifact set** (only the driver, agent DLL, launcher, service). The format description above is reconstructed from prior public RE + bit-level analysis of what's possible given the crypto primitives present in the current binaries.
 
 ---
 
-## Key derivation
+## Key derivation (reconstructed — unverified)
 
 ```
 rootKey = 32 bytes baked into agent DLL at a fixed RVA
-key     = HKDF-SHA256(rootKey, salt=iv, info="EACRULES2026", 32)
+key     = HKDF-SHA256(rootKey, salt=iv, info="EACRULES2026", 32)   // info string unverified
 ```
 
 ### Locating `rootKey` in the agent
@@ -50,9 +62,15 @@ key     = HKDF-SHA256(rootKey, salt=iv, info="EACRULES2026", 32)
 
 Spot-check: the HKDF-SHA256 inside is recognizable from HMAC inner/outer pad constants (`0x36`, `0x5C`) and SHA256 state constants.
 
-### Locating the Ed25519 pubkey
+### Locating the RSA / ECDSA pubkey (corrected)
 
-Distinct from the driver's self-sign key. Search the DLL for a 32-byte constant followed shortly by calls to field-arithmetic (Ed25519 verify is characteristic — multiprecision operations on 255-bit fields). Alternatively, the pubkey is sometimes xref'd from a function named via a localization string like `"rules signature invalid"`.
+Previous revisions said "Locating the Ed25519 pubkey" — that was wrong. In the Nov 20 2026 build:
+
+- Driver `.rdata` contains **12 RSA public-key OID (`06 09 2A 86 48 86 F7 0D 01 01 01`) matches** — first at `0x2C035B6`. These are the Epic + Anti-Cheat Integrity CA pubkeys.
+- Driver contains 1 `secp256r1` OID match (`06 08 2A 86 48 CE 3D 03 01 07`) at `0x303F8E` — ECDSA support.
+- No Ed25519 OID (`06 03 2B 65 70`) found anywhere.
+
+To find the specific pubkey used for rules.bin verification: xref from the "pbrules.bin" string, trace into the verify path, identify which of the 12 RSA pubkeys gets passed as a parameter to the RSA verify function.
 
 ---
 

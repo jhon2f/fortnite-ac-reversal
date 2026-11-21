@@ -171,7 +171,7 @@ Everything in the docs is a map. The specific values you MUST pull from your own
 - [ ] `ObCallback` strip mask for process AND thread
 - [ ] Baked-in Epic pubkey location (for session_auth verification)
 - [ ] Baked-in Epic pubkey location (for self-check signing)
-- [ ] 46-module manifest content
+- [ ] 45-tag module manifest (46 in pre-Nov-20-2026 builds; current = 45 after `IZ` tag removed)
 - [ ] Handler feature-flag table layout
 - [ ] Record walker magic constant
 - [ ] Oodle blob offset + size
@@ -223,11 +223,13 @@ Claims that cross-check against multiple independent sources:
 
 **Verification:** Provider name confirmed in Microsoft Learn documentation. GUID verified against `logman query providers` output on current Windows. **Correct.**
 
-### splitmix64 finalizer constant
+### Hash-dispatch finalizer constant
 
-**Claim:** `0x9E3779B185EBCA87` used 1071 times in the driver as hash mix.
+**Historical claim (MinaMeow v3.2.0.0):** `0x9E3779B185EBCA87` used 1071 times in the driver as hash mix (splitmix64 finalizer).
 
-**Verification:** Known splitmix64 finalizer constant (Vigna 2015, splitmix64.c). **Correct.**
+**Verification against v3.2.0.0 era**: Correct.
+
+**Verification against Nov 20 2026 build**: **NOT CORRECT ANYMORE.** The driver has rotated to a MurmurHash3-style finalizer: `0xFF51AFD7ED558CCD` with 1176 sites. SplitMix64's `0x9E3779B185EBCA87` has 0 sites in the new driver. The agent DLL (`b.dll`) retains 4 sites of the old splitmix64 constant though — different hash function per module.
 
 ### Secure Boot PCR mapping
 
@@ -341,7 +343,7 @@ No kernel driver exists on mobile. The EAC stack is PC-specific.
 
 ### Trust-level per-handler flag count
 
-**Correction:** The 46 count refers to the `.rdata` tag block at `0x2CE200`. Not every tag necessarily corresponds to a feature-flaggable handler — some are infrastructure (`Cont`, `Dcdd`). Confident-flaggable handlers probably ~30-35 of the 46 tags.
+**Correction:** The 46 count (now 45 in Nov 20 2026 build after `IZ` removal) refers to the `.rdata` tag block at `0x2CE200` (now `0x303530`). Not every tag necessarily corresponds to a feature-flaggable handler — some are infrastructure (`Cont`, `Dcdd`). Confident-flaggable handlers probably ~30-35 of the 45 tags.
 
 ### MCC bypass RET+NOP*4 byte-level
 
@@ -423,7 +425,7 @@ All claims about `spoof.sys` are **string-verified**.
 
 **Source:** researcher's claimed month-long analysis.
 
-**Verification:** The **structure** of claims (splitmix64 constant, VMProtect protection, 46-module manifest, HWID formatter location) is **internally consistent** and consistent with other public EAC RE work.
+**Verification:** The **structure** of claims (hash-dispatch + VMProtect protection + 46-module manifest + HWID formatter location) is **internally consistent** and consistent with other public EAC RE work. Note: the specific splitmix64 constant MinaMeow found was ROTATED to a MurmurHash3-style constant in the Nov 20 2026 build; the mechanism is unchanged but the specific constant is different.
 
 Specific offsets should be treated as **the specific researcher's build-specific findings** rather than universal truths. Current builds may have moved offsets. The **techniques** are reliably present; the **numbers** are per-build.
 
@@ -467,6 +469,48 @@ Specific UC threads that provided corrections / additions to this repo. Attribut
 | [779558](https://www.unknowncheats.me/forum/fortnite/779558-aleaclient-exe-dump.html) | **ecco271k** (Nov 16 2026) | Fortnite mid-game ban symptom: packet-freeze + infinite queue on relaunch. |
 | [781598](https://www.unknowncheats.me/forum/fortnite/781598-driver-worth.html) | **Kepiteo + mattdevs** (Nov 16 2026) | kdmapper's bundled iqvw64e almost certainly WDAC-blocked. Custom BYOVD + custom mapper is the current path. |
 
+### Correction landed — Nov 20 2026 Fortnite EAC update binary analysis
+
+The Nov 20 2026 Fortnite EAC update was dumped and byte-level analyzed. Multiple prior claims in this repo turned out to be wrong when checked against the actual shipped binaries. Full findings in `C:\Users\Vblak\Downloads\eac\REVERSAL_FINDINGS.txt` + `REVERSAL_FINDINGS_PASS2.txt` on the research machine.
+
+**Corrections landed in this cycle:**
+
+1. **Hash attribution fix** — MinaMeow's `0bbe6d48f45fc155f1c1d029df8de67f221b7329010164eda2dd06d7978340b9` is the SERVICE EXE (`EasyAntiCheat_EOS.exe`), not the driver as she wrote. Real driver hash in Nov 20 build: `3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b`.
+
+2. **Hash-dispatch algorithm swap** — Driver no longer uses splitmix64 (constant `0x9E3779B185EBCA87` → 0 sites in new driver). Now uses a MurmurHash3-style finalizer with constant `0xFF51AFD7ED558CCD` (1176 sites). Hash-reverse tables derived against MinaMeow's constant are broken.
+
+3. **No Ed25519 anywhere** — exhaustive OID scan of all 4 binaries found zero Ed25519 (`06 03 2B 65 70`) matches. Prior claims that rules.bin signatures / driver SELF_CHECK / agent init all use Ed25519 are **wrong**. Actual signing is **RSA** (12 RSA pubkey OIDs in driver alone) with possibly ECDSA-P256 for alternate paths.
+
+4. **No ChaCha20-Poly1305 anywhere** — exhaustive string scan found zero occurrences. Pipe AEAD is **AES-GCM** (AES-128-GCM and AES-256-GCM strings present in agent DLL).
+
+5. **TLS 1.2 only, not 1.3** — agent DLL has TLS 1.2 labels (`master secret`, `key expansion`, `client finished`, `server finished`, `extended master secret`) but zero TLS 1.3 labels.
+
+6. **TLS implementation is mbedTLS, not BoringSSL** — cipher suite naming uses dashes (`TLS-RSA-WITH-…`) which is the mbedTLS convention, distinct from BoringSSL's underscore form.
+
+7. **Manifest tag count 46 → 45** — `IZ` tag removed in current driver. Manifest offset moved from `0x2CE200` to `0x303530`.
+
+8. **Three user-mode components confirmed** — not two. Launcher wrapper (`a.dll` / `packed.dll`, 36 MB, signed, named 5-letter exports) + scanner agent (`b.dll` / `EasyAntiCheat_EOS.dll`, 24 MB, UNSIGNED, ZERO IMPORTS, 5 ordinal exports) + service/setup (`EasyAntiCheat_EOS.exe`, 32-bit, 1 MB). The agent having zero imports is the smoking-gun proof of manual-map architecture.
+
+9. **EAC runs its own private CA** — strings in agent DLL reference `Anti-Cheat Integrity CA11` (root), `Anti-Cheat Integrity Intermediate CA1`, `Anti-Cheat Integrity Intermediate CA10`. EAC signs its own internal artifacts (game catalogs, scanner modules, server session attestations) with this CA. Not previously documented in the repo.
+
+10. **Per-game `game.bin` hash catalogue** — agent DLL contains strings referencing a `game.bin` file. Semantic: each title ships a hash catalog of its own files, signed by EAC's CA. Validated at scan time. Errors: `error_catalogue_corrupted`, `error_catalogue_not_found`, `executable_not_hashed`. Not previously documented.
+
+11. **New signing cert** — thumbprint `3CD980E3BACD8FB6FB3F532AFF62753FB7DE47A8`, DigiCert Trusted G4 CA, valid Feb 2026 → Feb 2029. Replaces prior Nov 2025 cert.
+
+12. **Explicit tool blacklist in launcher** — 20+ literal process/driver name blocks in packed.dll `.rdata`. Documented in [doc 12 Part 1.5](12-cheat-detection.md#part-15--launcher-wrapper-explicit-tool-blacklist-nov-20-2026).
+
+13. **New pre-flight error codes** — DTrace, DotLocal, UEFI bootkit, Secure-Core-missing, ARM64-unsupported, Win10-22H2-minimum, driver-verifier, kernel-modified, case-sensitive-game-path. See [doc 12 Part 1.6](12-cheat-detection.md#part-16--launcher-wrapper-new-pre-flight-error-codes-nov-20-2026).
+
+14. **zstd compression confirmed in agent DLL** — 2 zstd-magic occurrences at offset `0x233B87`. Used for telemetry body compression with baked dictionary.
+
+15. **Monster section grew ~6.5 MB** in driver (0x2316000 → 0x28B9000) — more VM/handler bytecode.
+
+16. **Driver entry point moved** from `0x26F738` to `0x27C438` (.text section grew ~54 KB).
+
+17. **Record walker magic rotated** — old `0xE7AECCAE` and multiplier `-0x5163F18C` now have 0 occurrences each. New constants not yet identified.
+
+18. **Service EXE not rebuilt** — PE timestamp Sept 9 2026 unchanged. Only driver + launcher-wrapper + agent-DLL got new binaries this cycle.
+
 ### Correction landed — DllMain init chain (Nov 19 2026)
 
 **What was wrong:** Earlier revisions of [doc 04 Part 2](04-user-mode-agent.md#part-2--the-real-entry-model-not-a-classic-dllmain-chain) showed EAC's user-mode agent initializing from a classic `DllMain(DLL_PROCESS_ATTACH)` chain — pipe connect, driver auth, worker spawn, rules load, all inside DllMain.
@@ -491,7 +535,7 @@ All of the above pulled live from UC via MCP integration. Threads inspected at t
 
 ### What's consistent across UC
 
-- MinaMeow's byte-level teardown aligns with earlier Secret Club + Mellow research on EAC architecture — the 46-tag manifest, VMProtect usage, VAD walker, ObCallbacks strip are all independently corroborated.
+- MinaMeow's byte-level teardown aligns with earlier Secret Club + Mellow research on EAC architecture — the (46-tag, now 45) manifest, VMProtect usage, VAD walker, ObCallbacks strip are all independently corroborated.
 - Community observations about Fortnite-specific behaviors (page encryption, manual-map, inf-queue ban) align with reverse engineering findings.
 - Divergence exists on exact spoofer requirements — there's no consensus on the "complete" HWID surface because Epic doesn't publish it and the correlation model is opaque.
 

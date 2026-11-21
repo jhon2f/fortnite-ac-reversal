@@ -99,6 +99,164 @@ A well-written stealth hypervisor can defeat most individually. EAC's answer: ra
 
 ---
 
+## Part 1.5 — Launcher-wrapper explicit tool blacklist (Nov 20 2026)
+
+The launcher wrapper (`EasyAntiCheat.packed (1).dll`, 36 MB, signed by Epic) performs **pre-flight tool/driver detection BEFORE the game launches**. All entries below are literal byte-strings extracted from the Nov 20 2026 build:
+
+### Anti-cheat conflicts (refuses to launch alongside)
+
+```
+BattlEye                    (Fortnite's historical AC before 2021)
+ACE-BASE                    (ACE anticheat — Chinese games)
+EchoAC                      (Chinese anticheat)
+MyhProt2                    (anticheat variant)
+```
+
+### Cheat tools (literal process-name match)
+
+```
+Cheat Engine
+Xenos Injector              (public DLL injector)
+HideToolz                   (rootkit hider)
+Global Hack                 (specific cheat name/family)
+Iuebesks                    (short name — possibly a specific cheat variant ID)
+```
+
+### Reverse-engineering / debug tools
+
+```
+WinDbg
+LiveKD
+PCHunter64
+PowerTool X64
+WIN64AST                    (Chinese RE suite — "Windows 64-bit All Security Tools")
+Windows Kernel Explorer
+BlEM, CAIs, WinD64          (short-name identifiers for specific tools)
+TermDD
+```
+
+### System / fingerprint / BYOVD-source tools
+
+```
+CPU-Z                       (source of cpuz141.sys / cpuz149.sys BYOVDs)
+WinIO                       (BYOVD — kernel I/O driver)
+RWDrv                       (BYOVD — read/write driver)
+WinPmem                     (memory-forensics driver; usable as memory dumper)
+WinDivert                   (packet filter driver; usable for network cheats)
+```
+
+### Streaming / overlays
+
+```
+Moonlight Engine            (NVIDIA GameStream FOSS clone — potential overlay surface)
+```
+
+### Specific exploit variant fingerprints (code-pattern matches, not process names)
+
+```
+"SMEP Bypass (B)"
+"SMEP Bypass (C)"
+```
+
+EAC has specific code-pattern detection for known SMEP (Supervisor Mode Execution Prevention) bypass variants. Variants (A, D, etc.) likely exist in the fingerprint set but aren't visible as plain strings.
+
+### Possible cheat-family / variant ID codes
+
+Short identifiers also present in the blacklist region:
+
+```
+B957, S10, S11, S12, S13, N11, N14, XT15, UZF1, 2RT5, 99fT,
+2r@W, 01DB42, W2U8_ERROR
+```
+
+These look like internal identifier codes for specific detected cheat families or variants, each mapping to a signature in the backend's correlation database.
+
+### Impact
+
+A classic "rename Cheat Engine to notcheat.exe" bypass **no longer works** against this literal-name list. Need:
+- Remove the original from PATH and launched-process lists.
+- Don't have any of the listed tools mapped into memory.
+- Kernel drivers with these names in their `.rdata` or filename also fail.
+
+The blacklist is additive to EAC's rules.bin dynamic blacklist. The launcher refuses to spawn the game before EAC's driver/scanner even get a chance to run their scans.
+
+## Part 1.6 — Launcher-wrapper new pre-flight error codes (Nov 20 2026)
+
+Full `launcher_error.*` taxonomy extracted from packed.dll strings in the current build:
+
+```
+error_already_running                    error_patched
+error_another_launcher                   error_patched_boot_loader  (NEW)
+error_bad_exe_format                     error_process_crash
+error_bitset_64                          error_safe_mode
+error_case_sensitive_game_path  (NEW)    error_service_update_timeout
+error_certificate_validation             error_set_environment_variables
+error_configuration_validation           error_start
+error_debugger                           error_uncpath_forbidden
+error_deleted_driver                     error_unknown_game
+error_disk_space                         error_unknown_process
+error_dotlocal                  (NEW)    error_unrecognized_blacklisted_driver (NEW)
+error_driver_handle                      error_unsigned_driver
+error_driver_verifier_enabled   (NEW)    error_unsupported_arm64    (NEW)
+error_dtrace_enabled            (NEW)    error_win10_22h2_required  (NEW)
+error_failed_path_query                  success_loaded
+error_failed_to_execute
+error_forbidden_driver
+error_forbidden_tool
+error_game_running
+error_game_security_violation
+error_generic / error_generic_ex
+error_incompatible_driver_version
+error_incompatible_service
+error_instance_count_limit
+error_kernel_debug
+error_kernel_dse
+error_kernel_modified            (NEW — PatchGuard-equivalent integrity check)
+error_memory / error_memory_ex
+```
+
+`setup_error.*`:
+```
+error_encrypted (EFS / ransomware setup folder)
+error_not_installed
+error_rights (admin required)
+error_service_ex
+```
+
+`game_error.*`:
+```
+error_missing_secure_core_feature  (NEW — Windows 11 Secure-Core PC requirement)
+error_tool_forbidden
+error_virtual (VM detected)
+```
+
+### Specific new detection behaviors (Nov 20 2026)
+
+| Error key | What triggers it |
+|-|-|
+| `error_dtrace_enabled` | Windows DTrace (Dynamic Tracing) installed/enabled. DTrace is a newer Microsoft-provided tracing framework — EAC blocks it to prevent trace-based cheat analysis. |
+| `error_dotlocal` | A `.local` directory next to an EXE forces Windows to resolve DLLs from that directory first — classic DLL hijack vector. EAC detects and blocks. |
+| `error_patched_boot_loader` | `bootmgr.efi` / `winload.efi` integrity measurement failed — detects BlackLotus-class UEFI bootkits. Error string: `"Patched Windows boot loader detected. (Kernel Patch Protection disabled)"` |
+| `error_missing_secure_core_feature` | Windows 11 Secure-Core PC features (HVCI, VBS, DMA Protection) required on supported hardware. Future-looking requirement. |
+| `error_unsupported_arm64` | ARM64 Windows explicitly not supported by EAC. |
+| `error_win10_22h2_required` | Minimum supported OS is Windows 10 22H2. Older builds refused. |
+| `error_driver_verifier_enabled` | Driver Verifier running → block (EAC presumably has compatibility issues with Verifier-generated artificial faults, or simply treats it as a "cheat development environment" signal). |
+| `error_unrecognized_blacklisted_driver` | Generic bucket for drivers detected as "cheat-like" by heuristics rather than specific name match. |
+
+### Specific driver-detection prose strings
+
+```
+"The driver {0} is loaded but its file is missing. Please reboot your
+ system to unload the driver."
+     → Detects kdmapper-dropped drivers (loaded but no on-disk file).
+
+"The driver {0} is loaded without valid signature. Please reboot your
+ system to unload the driver."
+     → Detects manually-mapped / self-signed cheat drivers in kernel memory.
+```
+
+---
+
 ## Part 2 — Injection indicators
 
 What EAC looks at for cheat DLL injection:
