@@ -11,19 +11,30 @@ Loaded at agent init, decrypted, parsed into a series of sections indexed by rul
 ```c
 // APPROXIMATE / reconstructed from older RE + partial new-build analysis.
 // Exact header layout in Nov 20 2026 build has not been byte-verified.
+//
+// Fixed-size prefix = HEADER_FIXED = 40 bytes, followed by SIG_LEN bytes of
+// RSA signature. SIG_LEN is committed to 512 (RSA-4096) to match the signing
+// cert on doc 00 (RSA4096 / SHA384). Heuristic for verifying against a real
+// capture: SIG_LEN = file_size - HEADER_FIXED - hdr.plainSize.
+#define HEADER_FIXED 40
+#define SIG_LEN      512      // RSA-4096; see doc 00 signing cert
+
 struct eac_rules_hdr {
-    uint32_t magic;          // 'EACR' (byte-verified absent in driver; may
-                             //  live only in a shipped rules file not in
-                             //  the extracted binaries)
+    uint32_t magic;          // 'EACR' — presence UNVERIFIED (byte-scan of the
+                             //  extracted binaries found no 'EACR' literal;
+                             //  may only appear in a shipped pbrules.bin we
+                             //  don't yet have on disk)
     uint32_t version;
     uint8_t  iv[12];         // GCM nonce (ASSUMED — AES-GCM is used elsewhere
                              //  in agent, so GCM is plausible)
     uint32_t plainSize;
     uint32_t sectionCount;
     uint8_t  tag[16];        // GCM auth tag (if GCM)
-    uint8_t  sig[?];         // RSA signature, likely 256 bytes (RSA-2048)
-                             //  or 512 bytes (RSA-4096). NOT Ed25519 (see
-                             //  correction below).
+    // -- HEADER_FIXED (40 bytes) ends here --
+    uint8_t  sig[SIG_LEN];   // RSA-4096 signature (512 bytes). NOT Ed25519
+                             //  (see correction below). If a future capture
+                             //  shows 256-byte sigs, redefine SIG_LEN = 256
+                             //  (RSA-2048) — the rest of the layout is stable.
 };
 ```
 
@@ -173,6 +184,8 @@ struct {
 };
 ```
 
+Unlike every other by-SHA256 section, `0x60` entries carry **no `severity` field**. This is intentional: `0x60` is a *whitelist* — a match short-circuits further evaluation (treated as trusted), so there is no severity to raise. Every other section is a *blocklist* and therefore needs a severity on hit.
+
 ### `0x70` — SMBIOS anomaly
 
 ```c
@@ -209,15 +222,30 @@ struct {
 ## Python-ish decrypt skeleton
 
 ```python
+# Fixed-prefix bytes before the RSA signature.
+# magic(4) + version(4) + iv(12) + plainSize(4) + sectionCount(4) + tag(16) = 40
+HEADER_FIXED = 40
+SIG_LEN      = 512      # RSA-4096 per signing cert on doc 00.
+                        # Set to 256 if a future capture shows RSA-2048.
+HEADER_TOTAL = HEADER_FIXED + SIG_LEN
+
 def decrypt_rules_bin(path, root_key, epic_pubkey):
     data = open(path, "rb").read()
-    hdr  = parse_header(data[:80])      # magic / version / iv / plainSize
-                                        # / sectionCount / tag / sig
-    assert hdr.magic == b"EACR"
+    hdr  = parse_header(data[:HEADER_FIXED], data[HEADER_FIXED:HEADER_TOTAL])
+    # fields: magic / version / iv / plainSize / sectionCount / tag / sig
 
-    # 1. verify signature over (header_without_sig || ciphertext)
-    body = data[:80 - 64] + data[80:80 + hdr.plainSize]
-    if not ed25519_verify(epic_pubkey, body, hdr.sig):
+    # Magic presence is UNVERIFIED against a real pbrules.bin (we don't have
+    # one on disk — see "Crypto correction" above). Treat as a soft check:
+    if hdr.magic != b"EACR":
+        print(f"warn: magic {hdr.magic!r} != b'EACR' — "
+              f"format assumption may be wrong")
+
+    # 1. verify RSA signature over (fixed_header || ciphertext).
+    #    The signature itself is NOT part of the signed region.
+    body = data[:HEADER_FIXED] + data[HEADER_TOTAL:HEADER_TOTAL + hdr.plainSize]
+    # Probable scheme: RSA-PSS with SHA384 (matches the signing cert).
+    # Swap for pkcs1v15 if PSS fails.
+    if not rsa_pss_verify(epic_pubkey, body, hdr.sig, hash_alg="sha384"):
         raise ValueError("rules.bin signature invalid")
 
     # 2. derive key
@@ -226,7 +254,8 @@ def decrypt_rules_bin(path, root_key, epic_pubkey):
 
     # 3. AES-256-GCM decrypt
     aead = AESGCM(key)
-    pt   = aead.decrypt(hdr.iv, data[80:80 + hdr.plainSize] + hdr.tag,
+    pt   = aead.decrypt(hdr.iv,
+                        data[HEADER_TOTAL:HEADER_TOTAL + hdr.plainSize] + hdr.tag,
                         associated_data=None)
 
     # 4. parse sections
@@ -242,7 +271,7 @@ def decrypt_rules_bin(path, root_key, epic_pubkey):
     return sections
 ```
 
-Everything after step 1 is a straightforward byte-shuffle. Step 1 requires `epic_pubkey`, and step 2 requires `root_key`. Both are embedded in the agent DLL, and both rotate across versions.
+Everything after step 1 is a straightforward byte-shuffle. Step 1 requires `epic_pubkey` (one of the 12 RSA pubkeys in driver `.rdata` — identify which via xref from `"pbrules.bin"` into the verify path), and step 2 requires `root_key`. Both are embedded in the agent DLL, and both rotate across versions.
 
 ---
 

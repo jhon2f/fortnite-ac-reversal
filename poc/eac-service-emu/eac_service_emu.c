@@ -28,6 +28,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <sddl.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -133,9 +134,21 @@ static void seed_registry_baseline(void)
 static int create_ipc_objects(void)
 {
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, FALSE };
-    /* Permissive DACL so any user/game process can open these. For a real
-       emulator you want a specific DACL matching EAC's grant; this stub
-       accepts the default (which grants SYSTEM + creating user). */
+    PSECURITY_DESCRIPTOR psd = NULL;
+    /* Build a permissive DACL so a game running as a standard, non-elevated
+       user can open these Global\ named objects. Without this the service
+       (running as SYSTEM) would stamp the default DACL on the kernel objects
+       and OpenFileMappingW / OpenEventW from the game would fail with
+       ERROR_ACCESS_DENIED. "D:(A;;GA;;;WD)" = DACL, allow GENERIC_ALL to
+       Everyone — matches the real EAC service's grant for these objects.
+       Replace with a tighter ACE (e.g. per-SID grant) for production use. */
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:(A;;GA;;;WD)", SDDL_REVISION_1, &psd, NULL)) {
+        fprintf(stderr, "ConvertStringSecurityDescriptor failed: %lu\n",
+                GetLastError());
+        return 0;
+    }
+    sa.lpSecurityDescriptor = psd;
 
     g_sm_handle = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa,
                                      PAGE_READWRITE, 0, SM_SIZE, SM_NAME);
@@ -164,8 +177,12 @@ static int create_ipc_objects(void)
     g_ev_module = CreateEventW(&sa, FALSE, FALSE, EV_MODULE);
     if (!g_ev_driver || !g_ev_game || !g_ev_module) {
         fprintf(stderr, "CreateEvent failed: %lu\n", GetLastError());
+        LocalFree(psd);
         return 0;
     }
+    /* Kernel copies the SD into each object at creation, so we can free the
+       descriptor here without affecting the already-created handles. */
+    LocalFree(psd);
     return 1;
 }
 
@@ -223,9 +240,13 @@ static DWORD WINAPI pipe_server(LPVOID unused)
 {
     (void)unused;
     while (WaitForSingleObject(g_stop_event, 0) != WAIT_OBJECT_0) {
+        /* No FILE_FLAG_OVERLAPPED — the worker below issues blocking
+           ReadFile/WriteFile with a NULL OVERLAPPED, which would otherwise
+           fail with ERROR_INVALID_PARAMETER on the first I/O call and the
+           worker would exit before echoing a single frame. */
         HANDLE pipe = CreateNamedPipeW(
             PIPE_NAME,
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
             0x10000, 0x10000,

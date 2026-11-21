@@ -38,7 +38,7 @@ Path: `FortniteGame\Binaries\Win64\EasyAntiCheat_EOS\`
 |-|-|
 | `EasyAntiCheat_EOS.exe` | EOS launcher variant. |
 | `EasyAntiCheat_EOS_x64.dll` | EOS user-mode agent. |
-| `EasyAntiCheat_EOS.sys` | EOS kernel driver (smaller than classic). |
+| `EasyAntiCheat_EOS.sys` | EOS kernel driver. ~46 MB in the Nov 20 2026 build (SHA256 `3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b`). Historically smaller than the classic driver; current build is substantially larger. |
 | `Certificates\` | Pinned certs (shared with EOS SDK's set). |
 | `SplashScreen.png` | Version marker. |
 

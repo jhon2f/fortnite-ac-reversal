@@ -7,8 +7,8 @@ What you **can** build from this alone:
 - A launcher wrapper replacement with all 5 named exports
 - An agent DLL stub with the 5 ordinal entry points at the verified RVAs
 - A pipe/mapping/event IPC surface that the real game binary accepts
-- The 23 `ErrRpt_*` registry values
-- All 7 `EasyAntiCheat_EOS_Setup.exe` CLI subcommands
+- The 30 `ErrRpt_*` registry values
+- All 6 `EasyAntiCheat_EOS_Setup.exe` CLI subcommands
 - The complete TPM provisioning name surface
 
 What you **cannot** build without more (and what the server-side gate catches):
@@ -72,21 +72,20 @@ Two root keys. Both discovered as plain UTF-16LE strings in service EXE.
 
 ### 2.1 `HKLM\SYSTEM\CurrentControlSet\Services\EasyAntiCheat_EOS\Attestation`
 
-TPM attestation state lives here.
+TPM attestation state lives here. **Note:** This key only holds provisioning state flags — the actual AIK blob lives in the Tpm\PlatformQuoteKeys path below (see doc 10 Part 1).
 
 | Value name | Purpose | Written by |
 |-|-|-|
-| `QuoteKeyStatus` | Attestation key provisioning state (ok/pending/failed) | Service |
+| `QuoteKeyStatus` | Attestation key provisioning state flag (ok/pending/failed) | Service |
 | `QuoteKeyStatusCode` | Last error code from TPM provisioning | Service |
-| `AttestationKey` | Opaque handle / blob reference | Service |
 
-The keyed AIK itself is stored under:
+The actual AIK blob (named `AttestationKey`) is stored under:
 ```
-HKLM\SYSTEM\CurrentControlSet\Services\Tpm\PlatformQuoteKeys
+HKLM\SYSTEM\CurrentControlSet\Services\Tpm\PlatformQuoteKeys\AttestationKey
 ```
-as a `PcpTpmPersistentKeyBlob` typed value named `EacQuoteKey`. This is standard Microsoft Platform Crypto Provider format.
+as a `PcpTpmPersistentKeyBlob` typed value. This is standard Microsoft Platform Crypto Provider format and is the authoritative location for the key material; the service-local key under `EasyAntiCheat_EOS\Attestation` only carries state flags, not the key itself.
 
-### 2.2 `HKLM\Software\EasyAntiCheat_EOS` (ErrRpt_* — 23 values, full enumeration)
+### 2.2 `HKLM\Software\EasyAntiCheat_EOS` (ErrRpt_* — 30 values, full enumeration)
 
 Session telemetry stored locally for crash reconstruction. **Full byte-verified list:**
 
@@ -149,7 +148,7 @@ The pipe still exists for commands that need stream ordering (session begin/end,
 
 ### 3.2 Pipe name
 
-`\\.\pipe\EasyAntiCheat_EOS` — standard EAC EOS convention. Named with full ACL (`SECURITY_ATTRIBUTES` with DACL allowing `SYSTEM` + `AUTHENTICATED_USERS`).
+`\\.\pipe\EOS_EAC_<session>` — standard EAC EOS convention with per-session suffix (authoritative per doc 09; older doc 05 references should be reconciled to this form). Named with full ACL (`SECURITY_ATTRIBUTES` with DACL allowing `SYSTEM` + `AUTHENTICATED_USERS`).
 
 ### 3.3 Device object
 
@@ -424,9 +423,9 @@ These correlate to the ban pipeline. An `AntiCheat.Error.IntegrityViolation` eve
 | Driver stub | Create `\Device\EasyAntiCheat_EOS`, respond to IOCTL_SELF_CHECK + IOCTL_ENUM_MODULES with crafted responses | doc 02 |
 | Agent DLL replacement | Match 5 ordinal entry points; return success from each; no actual scanning | Part 1, this doc + doc 04 |
 | Launcher wrapper replacement | Export `a,b,c,d,e`; `d` returns success; invoke game | Part 1 |
-| Registry baseline | Write all 23 `ErrRpt_*` values to make last session look clean | Part 2.2 |
+| Registry baseline | Write all 30 `ErrRpt_*` values to make last session look clean | Part 2.2 |
 | TPM provisioning stub | Fake `QuoteKeyStatus` = ok + `QuoteKeyStatusCode` = 0 in registry | Part 2.1 |
-| Setup CLI | Respond to all 7 subcommands; at minimum `verify-installation` returns 0 | Part 4 |
+| Setup CLI | Respond to all 6 subcommands; at minimum `verify-installation` returns 0 | Part 4 |
 
 ### 10.2 What the local stack passes
 
@@ -488,8 +487,8 @@ For researchers loading these binaries in a disassembler, here are the key offse
 
 | Offset / Location | Content |
 |-|-|
-| `.rdata` | All 23 `ErrRpt_*` registry value strings |
-| `.rdata` | All 7 CLI subcommand help text |
+| `.rdata` | All 30 `ErrRpt_*` registry value strings |
+| `.rdata` | All 6 CLI subcommand help text |
 | `.rdata` | All 15 DLL names |
 | `.rdata` | EventLog XPath query template |
 | `.rdata` | Telemetry upload URL templates |

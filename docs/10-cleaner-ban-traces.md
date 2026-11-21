@@ -94,6 +94,8 @@ HKLM\SYSTEM\CurrentControlSet\Services\Tpm\PlatformQuoteKeys\AttestationKey
 
 These are Windows per-service platform quote key storage. **If present, your TPM has been bound to an EAC session.** Clearing requires TPM clear (destroys BitLocker keys).
 
+> **Caveat (Nov 2026):** presence of `EacQuoteKey` proves TPM was *collected*, not that it is weighted into the current HWID hash. Per [11 HWID spoofing §2.7](11-hwid-spoofing.md#27-tpm) (alexanderyy): *"TPM is collected but I don't think it is used"* — i.e. collected ≠ used in the current ban-hash. Clear it if you're being thorough, but don't expect a TPM clear alone to resolve a ban.
+
 ---
 
 ## Part 2 — Windows forensic artifacts that outlive EAC's cleanup
@@ -533,11 +535,11 @@ The full surface you'd need to touch for a comprehensive clean. This is an **inv
 | 31 | Clear Fortnite-related NVIDIA Shadowplay / AMD ReLive captures |
 | 32 | Clear Discord / Steam / overlay app logs |
 | 33 | Clear ReadyBoot traces |
-| 34 | **Recognize that none of this touches the HWID binding — see Part 6** |
+| 34 | **Recognize that none of this touches the HWID binding — see Part 7** |
 
 ---
 
-## Part 5.5 — Community observations on cleaning effectiveness (Nov 2026)
+## Part 6 — Community observations on cleaning effectiveness (Nov 2026)
 
 Direct observations from active Fortnite HWID-ban debugging (UC thread 779558 — AleaClient/ReTrac, generalizable):
 
@@ -578,7 +580,7 @@ Epic's enforcement tiers include time-limited HWID restrictions — not just bin
 
 ---
 
-## Part 6 — Why cleaning alone doesn't beat HWID bans
+## Part 7 — Why cleaning alone doesn't beat HWID bans
 
 **The critical point.** EAC's and Epic's backend don't need your on-disk forensic artifacts to re-recognize banned hardware. At next session start:
 
@@ -606,7 +608,7 @@ Spoof the inputs that go into the HWID hash. That's [11 HWID spoofing](11-hwid-s
 
 ---
 
-## Part 7 — Ban status checking
+## Part 8 — Ban status checking
 
 ### Specific URLs to check account state
 
@@ -632,20 +634,17 @@ None definitive. Combined across 10+ matches, strong correlation.
 
 ### Ban-type summary table
 
+Full taxonomy with user-facing symptoms lives in [07 Fortnite integrity Part 7](07-fortnite-integrity.md#part-7--kick--soft-ban--hard-ban--hwid-ban-taxonomy) — not duplicated here. Deltas specific to this doc (short-duration HWID tiers, not covered in doc 07):
+
 | Ban type | What you experience |
 |-|-|
-| **Kick** | Disconnected mid-match with an error code. Can rejoin immediately. |
-| **Soft ban** | "You are matchmaking-banned for X time." Timer visible. |
-| **Shadow ban** | Session works normally, but matchmaking is biased. |
-| **Hard ban (account)** | Login fails with "This account has been banned from Fortnite." |
-| **Hard ban (platform)** | Login fails across ALL Epic services. |
-| **HWID ban** | New account created on same hardware is banned within first session. |
-| **IP ban** (rare) | Specific IP range blocked. |
-| **Payment ban** | Account can log in, cannot purchase/receive items. |
+| **HWID ban — 24h** | New account on same hardware blocked for 24 hours (kaiquemarianoah, thread 781505). |
+| **HWID ban — 365d** | New account on same hardware blocked for a year (saseeexfg, thread 781256). |
+| **HWID ban — permanent** | Classic case; new hardware required. |
 
 ---
 
-## Part 8 — Operational cheat-market vernacular
+## Part 9 — Operational cheat-market vernacular
 
 2026-era cheat-market terms for ban states:
 

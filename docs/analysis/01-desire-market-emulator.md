@@ -202,7 +202,7 @@ shm PATCH_PTE refused (EAC TI ProtectVm)
 shm ALLOC refused (EAC TI AllocVm)
 ```
 
-**The driver explicitly detects EAC's TI subscription and refuses user-mode-requested operations (PATCH_PTE, ALLOC) that would trigger TI events.** See [18 — ETW-TI and kernel hazards](../18-etw-ti-and-kernel-hazards.md) for the full context.
+**The driver explicitly detects EAC's TI subscription and refuses user-mode-requested operations (PATCH_PTE, ALLOC) that would trigger TI events.** See [11 — HWID spoofing § ETW-TI and kernel hazards](../11-hwid-spoofing.md) for the full context.
 
 Operationally: **the spoofer is aware of EAC's observability and tries to not generate events EAC would see.** This is the state-of-the-art.
 
@@ -267,7 +267,7 @@ The emulator ships as a package because dev-provisioned EAC-protected products n
 
 **Indirect learning:**
 
-- The HWID spoof surface in `spoof.sys` is the complete current-build surface (see [B — HWID spoofing](../11-hwid-spoofing.md) and [18 — ETW-TI hazards](../18-etw-ti-and-kernel-hazards.md)).
+- The HWID spoof surface in `spoof.sys` is the complete current-build surface (see [11 — HWID spoofing](../11-hwid-spoofing.md) and [11 — HWID spoofing § ETW-TI hazards](../11-hwid-spoofing.md)).
 - The ACPI table list + boot variable list tells you exactly what a durable spoofer must handle.
 - The ETW-TI constraint ("shm PATCH_PTE refused") is confirmed in the wild.
 - The hooked driver list is a map of where the storage / network / display / USB / SMBUS / audio stacks hang together for spoofing purposes.

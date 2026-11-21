@@ -24,16 +24,19 @@ payload      u8[payloadLen]
 
 | Bit | Meaning |
 |-|-|
-| `0x1` | `ENCRYPTED` — payload is ChaCha20-Poly1305 under session ephemeral key. |
+| `0x1` | `ENCRYPTED` — payload is AES-GCM under session ephemeral key. |
 | `0x2` | `ACK_REQUIRED` — sender expects an ack frame. |
 | `0x4` | `FRAGMENT` — payload continues in next frame. |
 
 ### Encryption (when `ENCRYPTED` is set)
 
-- Cipher: **ChaCha20-Poly1305** (upgraded from plain ChaCha20 historically).
+- Cipher: **AES-GCM** (AES-128-GCM or AES-256-GCM — both mode strings are present in the agent DLL).
 - Nonce: 12 bytes = `[session_nonce_prefix (8)] + [counter (4)]`. Counter increments per frame.
-- Tag: 16-byte Poly1305 tag appended after the ciphertext.
-- Key: 32-byte session ephemeral key, delivered by the launcher in `WELCOME`.
+- Tag: 16-byte GCM tag appended after the ciphertext.
+- Key: session ephemeral key (16 or 32 bytes), delivered by the launcher in `WELCOME`.
+
+> **Correction (2026-11-20 audit):** earlier drafts of this doc claimed ChaCha20-Poly1305. A byte-scan of all four current binaries found zero occurrences of ChaCha/Poly1305/XChaCha; the agent contains only AES mode strings. AEAD is AES-GCM. See doc 04 Part 4 and doc 06 for the crypto correction.
+- CRC coverage: the `crc32` field is computed over the bytes that appear in `payload` on the wire. When `ENCRYPTED` is set that means the CRC covers the ciphertext **including the trailing 16-byte GCM tag** — not the plaintext. Verify CRC first, then decrypt.
 
 ---
 
@@ -54,7 +57,7 @@ bootCookie    u64
 
 ```
 sessionId        u8[16]       // GUID
-ephemeralKey     u8[32]       // ChaCha20-Poly1305 key
+ephemeralKey     u8[32]       // AES-GCM session key (128/256-bit)
 serverTime       u64
 ```
 
@@ -87,15 +90,26 @@ frame_capture_period_s   u16
 env_check_period_s       u16
 ```
 
-### 6. (optional) `REMOTE_MODULE_LOAD` (launcher → agent)
+The `enabled_modules` bit-to-scanner mapping is **not fixed** — the backend rotates per-handler feature flags per session, and the bit order shifts with each driver build (see doc 04 Part 16). To recover the current mapping, cross-reference the dispatch table that the agent indexes with this bitmap against the handler offsets listed in docs 02 and 04. Do not hard-code bit numbers.
 
-Carries a signed auxiliary scanner DLL. Agent verifies the Ed25519 signature with an Epic pubkey, manually maps the module, calls its entrypoint with an EAC-provided scan context. Module stays resident for the session.
+Handshake ends here — once `CONFIG` is applied the agent transitions to the steady-state loop. `REMOTE_MODULE_LOAD` is a server-push opcode that may arrive at any point during the session, not a handshake frame; see the deep-dive below the opcode table.
 
 ---
 
 ## Opcode table
 
 Numbers rotate per build — descriptions by behavior.
+
+### Recovering current-build numbers
+
+The opcode space is a dense `switch` inside the agent's pipe-frame dispatcher. To anchor it for a given build:
+
+1. Find the dispatch switch in the agent DLL (the function called immediately after frame CRC/decrypt, taking `opcode` as its selector).
+2. Anchor opcode `1` by setting a breakpoint on the `HELLO` handler — it is always the first frame the agent sends, so it is trivial to catch at session start and walk back to the switch arm.
+3. Once `HELLO` is anchored you can label the remaining arms by behavior (every other opcode in the agent → launcher column has a distinct handler: scan triggers, report serializers, keepalive, etc.).
+4. For launcher → agent opcodes, hook `WELCOME` first (second frame on the wire) and work outward.
+
+Alternatively, dump a few sessions of plaintext pre-encryption frames and correlate payload shapes with the handler bodies.
 
 ### Agent → launcher
 
@@ -143,7 +157,7 @@ Lets Epic deploy new detections without shipping a new EAC version. A new cheat 
 
 1. Launcher receives (or has cached) a signed module blob from `modules-cdn.eac-prod.on.epicgames.com`.
 2. Launcher pushes it to the agent over the pipe via `REMOTE_MODULE_LOAD`.
-3. Agent verifies the Ed25519 signature with a baked-in Epic pubkey.
+3. Agent verifies the **RSA** signature with a baked-in Epic pubkey (see the crypto correction in doc 06 — zero Ed25519 OIDs exist in any Nov 20 2026 binary; the driver carries 12 RSA pubkey OIDs).
 4. Agent **manually maps** the module (not `LoadLibrary` — adding an unsigned-path-looking module to LDR would be hygiene-breakage and self-flag).
 5. Agent builds a minimal IAT via `GetProcAddress` internally.
 6. Agent calls the module's exported entrypoint with a pointer to an EAC-provided `scan context`.

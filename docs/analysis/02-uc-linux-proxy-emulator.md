@@ -60,9 +60,21 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD fdwReason, LPVOID) {
 
 The DLL only activates when loaded inside the actual game process (not when loaded by other tools inspecting it).
 
-### Exports (`exports.def`)
+### Exports (`src/win/exports.def`)
 
-**677 exports** — every single public EOS SDK function. Most are `dummy_func` stubs; the critical ones are routed to `Dummy*` implementations:
+**677 exports** — every single public EOS SDK function. Count was obtained from the module definition file:
+
+```bash
+# Count EXPORTS entries in the .def
+grep -cE '^\s+EOS_' src/win/exports.def
+# → 677
+
+# Or, after build, confirm against the produced DLL:
+dumpbin /exports EOSSDK-Win64-Shipping.dll | grep -cE '^\s+[0-9]+\s+[0-9A-F]+'
+# → 677
+```
+
+Most are `dummy_func` stubs; the critical ones are routed to `Dummy*` implementations:
 
 | Export (classical EOS SDK) | Implementation |
 |-|-|

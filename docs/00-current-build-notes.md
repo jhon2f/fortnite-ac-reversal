@@ -11,7 +11,7 @@ Includes Fortnite-specific EAC history (BattlEye → dual-stack → EAC-only →
 | Artifact | Size | SHA256 | PE timestamp |
 |-|-|-|-|
 | `EasyAntiCheat_EOS.sys` (kernel driver) | 46,171,808 | `3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b` | 2026-11-17 05:36:29 |
-| `EasyAntiCheat_EOS.dll` (real scanner, `b.dll`, **UNSIGNED**, zero imports) | 24,245,760 | `c4d06ee450c2770588416228a5692265c68e9ae7cb199b19c19c8af8784b5dc0` | 2026-11-17 13:34:50 |
+| `EasyAntiCheat_EOS.dll` (real scanner, `b.dll`, **UNSIGNED**, zero imports, 5 unnamed ordinals — manual-map target) | 24,245,760 | `c4d06ee450c2770588416228a5692265c68e9ae7cb199b19c19c8af8784b5dc0` | 2026-11-17 13:34:50 |
 | `EasyAntiCheat.packed (1).dll` (launcher wrapper, `a.dll`) | 36,403,128 | `28b0756d2be21386ae826511deafec906976cf7e10db6e34856ad3b863ecd6e7` | 2026-11-17 13:40:14 |
 | `EasyAntiCheat_EOS.exe` (service/setup, 32-bit) | 1,041,336 | `0bbe6d48f45fc155f1c1d029df8de67f221b7329010164eda2dd06d7978340b9` | 2026-09-09 14:20:48 |
 
@@ -21,7 +21,9 @@ Signing cert (sys + exe + packed-dll):
 - Valid: 2026-02-01 → 2029-02-01
 - Subject: `CN=Epic Games Inc., O=Epic Games Inc., L=Cary, S=North Carolina, C=US`
 
-> **CORRECTION**: Earlier revisions of this repo attributed hash `0bbe6d48...340b9` to "the driver v3.2.0.0" (per MinaMeow). That hash is actually the **service EXE**, not the driver. MinaMeow mislabeled her own file. The real driver (now 46 MB in current build) has hash `3eabcfe9...5d2b`.
+> **CORRECTION**: Earlier revisions of this repo attributed hash `0bbe6d48...340b9` to "the driver v3.2.0.0" (per MinaMeow). That hash is actually the **service EXE** (1 MB, 32-bit PE32), not the driver. MinaMeow mislabeled her own file. The real driver (now 46 MB in current build) has hash `3eabcfe9...5d2b`.
+>
+> **CORRECTION (supersedes doc 01)**: Doc 01 §95-98 (citing UC thread 772331) describes the bundled `EasyAntiCheat_EOS.dll` as a "forwarder/loader stub" with the real scanner dropped at runtime to `C:\Windows\System32\eac_usermode_<Random>.dll`. That was the **prior architecture**. In the Nov 20 2026 build, byte evidence shows the bundled 24 MB DLL (zero imports, 5 unnamed ordinals) **is itself the manual-map target** — it is the real scanner, not a stub. Doc 00 is authoritative here; doc 01's claim is historical.
 
 ---
 
@@ -35,7 +37,7 @@ Signing cert (sys + exe + packed-dll):
 | 2018-2021 | **BattlEye + EAC dual stack** | Both ACs ran simultaneously; cheat devs had to defeat both |
 | 2021 | **EAC only** (BattlEye dropped) | Epic consolidation move |
 | 2022+ | EAC migrating Classic → EOS variant | `EasyAntiCheat_EOS.*` stack |
-| 2023+ | Ed25519 signatures, VMProtect 3.x, bundled hook baselines | |
+| 2023+ | VMProtect 3.x, bundled hook baselines | (prior revisions listed "Ed25519 signatures" here as a transient historical entry; the Nov 20 2026 byte-scan found zero Ed25519 OIDs — see Crypto correction below. Current signatures are RSA / ECDSA-P256.) |
 | 2024+ | ETW-TI subscription, `env_worker` drift detection | |
 | 2024+ | TPM attestation via `EacQuoteKey` | Hardware-rooted trust |
 | 2025+ | `PsSetCreateProcessNotifyRoutineEx2` with veto | Win11 23H2+ only |
@@ -174,7 +176,7 @@ Agent DLL contains strings referencing a `game.bin` file. Semantic: per-game has
 ### Fortnite-side
 
 - **UE5-current integration.** Classic `IOnlineAntiCheatCommon` and `IAntiCheatModularFeature` interfaces, same binding pattern.
-- **Shipping exe signature-check on EAC init callback.** Current builds verify not just that EAC's init returned success but also that the init callback carried an Ed25519 signature over session state that only the real EAC can produce. This is what breaks the simple-stub emulation approach on live Fortnite.
+- **Shipping exe signature-check on EAC init callback.** Current builds verify not just that EAC's init returned success but also that the init callback carried a signature (RSA or ECDSA — see Crypto correction above; no Ed25519 present) over session state that only the real EAC can produce. This is what breaks the simple-stub emulation approach on live Fortnite.
 
 ---
 
@@ -196,12 +198,14 @@ For completeness, because people assume lots of things changed that didn't:
 - **BattlEye.** Dropped around 2021.
 - **Legacy `easyanticheat.net` transport.** DNS still resolves, HTTP 410 on new sessions.
 - **AES-128-CBC rules.bin.** Replaced by AES-256-GCM.
-- **RSA-PSS rules.bin signature.** Replaced by Ed25519.
+- **RSA-PSS rules.bin signature.** Replaced — current signature is RSA (12 RSA pubkey OIDs in driver at 0x2C035B6) or ECDSA-P256 (1 secp256r1 OID at 0x303F8E). Earlier revisions of this doc claimed Ed25519; the Nov 20 2026 byte-scan found zero Ed25519 OIDs (`06 03 2B 65 70`) anywhere — see the Crypto (CORRECTED Nov 20 2026) section.
 - **Trusting `\KnownDlls` for hook-detector baselines.** Bundled baselines now.
 
 ---
 
 ## Part 5 — Milestone cheat events (what triggered which EAC changes)
+
+> **AUTHORITATIVE — read first.** Doc 07 Part 21 contains a partial duplicate of this timeline (missing the 2022 LAPSUS$ entry). This doc 00 version is the canonical one; doc 07's copy must defer to this list and should be treated as a cross-reference only. Updates land here first.
 
 Specific events that triggered observable EAC changes:
 
@@ -258,8 +262,8 @@ To figure out which EAC build you're staring at before you start reversing:
 - **Agent build string in telemetry packets** (`EAC_2026_MM_DD` pattern). Lift from a pipe capture.
 - **Signer cert thumbprint on `.sys` + `.dll`.** `signtool verify /pa /v`. Thumbprints and sign dates narrow down the window.
 - **IOCTL dispatcher size.** Current-build driver dispatcher is bigger than historical (new IOCTLs added).
-- **Imports tab in IDA on the `.sys`.** 5-ish imports → current (name-resolution). 50+ imports → pre-2019.
-- **Current rules.bin file size + magic** (`EACR` header + GCM structure + Ed25519 sig at end = current-build).
+- **Imports tab in IDA on the `.sys`.** Exactly one import (`FLTMGR.SYS!FltRegisterFilter`) → current (everything else is name-resolved at runtime; see doc 02 §27, §64). 50+ imports → pre-2019.
+- **Current rules.bin file size + magic** (`EACR` header + GCM structure + RSA or ECDSA-P256 sig at end = current-build; no Ed25519 — see Crypto correction).
 
 ---
 

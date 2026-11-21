@@ -23,10 +23,13 @@
 
 /* --- types from EOS SDK anti-cheat client public headers --- */
 
+/* Real EOS_EResult values from eos_common.h -- do NOT make these up;
+ * games compare against the SDK constants and placeholder codes will be
+ * misinterpreted. Include the real header if available. */
 typedef int32_t EOS_EResult;
-#define EOS_SUCCESS       ((EOS_EResult)0)
-#define EOS_INVALID_PARAM ((EOS_EResult)1)
-#define EOS_NOT_FOUND     ((EOS_EResult)2)
+#define EOS_SUCCESS              ((EOS_EResult)0)
+#define EOS_INVALID_PARAMETERS   ((EOS_EResult)2)
+#define EOS_NOT_FOUND            ((EOS_EResult)35)
 
 typedef void* EOS_HAntiCheatClient;
 typedef uint64_t EOS_AntiCheatCommon_ClientHandle;
@@ -53,22 +56,37 @@ typedef struct {
 typedef void (*EOS_AntiCheatClient_OnClientIntegrityViolatedCallback)(
     const void* Data);
 
+/* Server-mode variants (client <-> trusted game server) carry no
+ * ClientHandle; only the peer-mode variants do. Conflating them shifts
+ * every subsequent field offset for callers. Mirror the real SDK layout. */
 typedef struct {
     int32_t ApiVersion;
-    EOS_AntiCheatCommon_ClientHandle ClientHandle;
+    uint32_t OutputLengthBytes;
 } EOS_AntiCheatClient_PollStatusOptions;
 
 typedef struct {
     int32_t ApiVersion;
-    EOS_AntiCheatCommon_ClientHandle ClientHandle;
-    const void* Data;
     uint32_t DataLengthBytes;
-} EOS_AntiCheatClient_ReceiveMessageOptions;
+    const void* Data;
+} EOS_AntiCheatClient_ReceiveMessageFromServerOptions;
 
 typedef struct {
     int32_t ApiVersion;
-    EOS_AntiCheatCommon_ClientHandle ClientHandle;
+    EOS_AntiCheatCommon_ClientHandle PeerHandle;
+    uint32_t DataLengthBytes;
+    const void* Data;
+} EOS_AntiCheatClient_ReceiveMessageFromPeerOptions;
+
+typedef struct {
+    int32_t ApiVersion;
+    EOS_AntiCheatCommon_ClientHandle PeerHandle;
+    const char* PeerProductUserId;
 } EOS_AntiCheatClient_RegisterPeerOptions;
+
+typedef struct {
+    int32_t ApiVersion;
+    EOS_AntiCheatCommon_ClientHandle PeerHandle;
+} EOS_AntiCheatClient_UnregisterPeerOptions;
 
 typedef struct {
     int32_t ApiVersion;
@@ -131,7 +149,7 @@ EOS_AntiCheatClient_PollStatus(EOS_HAntiCheatClient h,
 __declspec(dllexport) EOS_EResult
 EOS_AntiCheatClient_ReceiveMessageFromServer(
     EOS_HAntiCheatClient h,
-    const EOS_AntiCheatClient_ReceiveMessageOptions* opts)
+    const EOS_AntiCheatClient_ReceiveMessageFromServerOptions* opts)
 {
     (void)h; (void)opts;
     /* Accept whatever the server sends. */
@@ -150,7 +168,7 @@ EOS_AntiCheatClient_RegisterPeer(
 __declspec(dllexport) EOS_EResult
 EOS_AntiCheatClient_UnregisterPeer(
     EOS_HAntiCheatClient h,
-    const EOS_AntiCheatClient_RegisterPeerOptions* opts)
+    const EOS_AntiCheatClient_UnregisterPeerOptions* opts)
 {
     (void)h; (void)opts;
     return EOS_SUCCESS;
@@ -159,14 +177,21 @@ EOS_AntiCheatClient_UnregisterPeer(
 __declspec(dllexport) EOS_EResult
 EOS_AntiCheatClient_ReceiveMessageFromPeer(
     EOS_HAntiCheatClient h,
-    const EOS_AntiCheatClient_ReceiveMessageOptions* opts)
+    const EOS_AntiCheatClient_ReceiveMessageFromPeerOptions* opts)
 {
     (void)h; (void)opts;
     return EOS_SUCCESS;
 }
 
-/* integrity callback registration */
-__declspec(dllexport) EOS_EResult
+/* integrity callback registration.
+ *
+ * Real SDK: AddNotify* returns EOS_NotificationId (uint64_t), and the
+ * paired Remove takes that id by value as uint64_t. Returning
+ * EOS_EResult here would truncate to 32 bits and desync the game's
+ * stored handle. */
+typedef uint64_t EOS_NotificationId;
+
+__declspec(dllexport) EOS_NotificationId
 EOS_AntiCheatClient_AddNotifyClientIntegrityViolated(
     EOS_HAntiCheatClient h,
     const void* options,
@@ -177,13 +202,13 @@ EOS_AntiCheatClient_AddNotifyClientIntegrityViolated(
     g.integrity_cb = cb;
     g.integrity_cb_ctx = ctx;
     /* Return a notification id; game stores for later Remove. */
-    return (EOS_EResult)0x1234;
+    return (EOS_NotificationId)0x1234ULL;
 }
 
 __declspec(dllexport) void
 EOS_AntiCheatClient_RemoveNotifyClientIntegrityViolated(
     EOS_HAntiCheatClient h,
-    uint32_t notification_id)
+    EOS_NotificationId notification_id)
 {
     (void)h; (void)notification_id;
     g.integrity_cb = NULL;

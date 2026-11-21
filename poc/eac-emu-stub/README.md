@@ -20,7 +20,7 @@ Single-source stub replacement for `EasyAntiCheat_x64.dll`. Satisfies a game's E
 
 The stub in this directory replaces the client-side EOS SDK DLL. For complete on-host emulation:
 
-- [`../eac-service-emu/`](../eac-service-emu/) — service emulator (`EasyAntiCheat_EOSSys`), pipe server, named events, shared memory, 23× `ErrRpt_*` registry values, 7× setup CLI subcommands.
+- [`../eac-service-emu/`](../eac-service-emu/) — service emulator (`EasyAntiCheat_EOSSys`), pipe server, named events, shared memory, 23× `ErrRpt_*` registry values, 6× setup CLI subcommands.
 - [`../eac-launcher-wrapper/`](../eac-launcher-wrapper/) — replacement for `a.dll` (launcher wrapper) with 5 named exports `a,b,c,d,e` matching Nov 20 2026 byte layout.
 
 All three PoCs together recreate the on-host stack. Server-side gate (Epic + EAC backend) still rejects — see [`../../docs/15-protocol-recreation.md`](../../docs/15-protocol-recreation.md) Part 13 for the hard limit.

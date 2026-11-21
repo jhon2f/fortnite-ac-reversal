@@ -245,8 +245,8 @@ Accessed via `NtQuerySystemInformation(SystemFirmwareTableInformation, 'RSMB')`,
 | `MachineGuid` | `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid` |
 | `MachineSid` | `HKLM\SECURITY\SAM\Domains\Account\F` (requires SYSTEM) |
 | `SqmClient\MachineId` | `HKLM\SOFTWARE\Microsoft\SQMClient\MachineId` |
-| Windows **InstallDate** | `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\InstallDate` |
-| Windows **InstallTime** | Same key, `InstallTime` (FILETIME) |
+| Windows **InstallDate** | `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\InstallDate` — **32-bit Unix epoch** (seconds since 1970) |
+| Windows **InstallTime** | Same key, `InstallTime` — **64-bit FILETIME QWORD** (100 ns ticks since 1601). **Both values must be kept consistent**: a spoofer that writes only `InstallDate` leaves `InstallTime` pointing at the real install moment, and EAC's env_worker compares them. |
 | `ProductId` | `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProductId` |
 | `DigitalProductId` | Same key — 4 bytes of install ID, per-install unique |
 | Edition ID | Same key, `EditionID` |
@@ -311,7 +311,7 @@ A spoofer that wants to change what EAC sees has to patch **all three paths**. T
 
 **The drift-detector problem:** EAC's `env_worker` runs environment-consistency checks every 30s. Re-reads SMBIOS vs session-init snapshot. Lazy spoofers get caught.
 
-**ACPI table spoof-weight table** — which of the 28 tables actually fingerprint:
+**ACPI table spoof-weight table** — covers **every ACPI table the shipped `spoof.sys` actually patches** (34 tables; verified against the driver's verbatim string block in Part 4). Builders that only patch the top ~17 leave the rest fingerprinting the host:
 
 | Table | What it is | Spoof weight |
 |-|-|-|
@@ -331,6 +331,21 @@ A spoofer that wants to change what EAC sees has to patch **all three paths**. T
 | `MSDM` | OEM Activation 2.0 — contains OEM product key | **Fingerprint** |
 | `SRAT` | System Resource Affinity Table — NUMA | Medium |
 | `OEM1..4` | Vendor-specific | **Fingerprint** |
+| `SLIT` | System Locality Information Table — NUMA inter-node distances | Medium |
+| `BERT` | Boot Error Record Table — pre-boot error log | Low |
+| `HEST` | Hardware Error Source Table — RAS source descriptors | Low |
+| `ERST` | Error Record Serialization Table | Low |
+| `FPDT` | Firmware Performance Data Table — boot timing history | **Fingerprint** — timing history is per-host |
+| `NHLT` | Non-HD-Audio Link Table — DSP / soundwire / audio-codec topology | Medium |
+| `XSDT` | Extended System Description Table — 64-bit root of ACPI tables | **High** — must stay consistent with patched children |
+| `RSDT` | Root System Description Table — 32-bit legacy root | **High** — same consistency requirement as XSDT |
+| `DBG2` | Debug Port Table 2 — serial/USB debug endpoints | Low |
+| `DBGP` | Debug Port Table (legacy) | Low |
+| `WSMT` | Windows SMM Security Mitigations Table — SMM capability flags | Medium |
+| `IORT` | IO Remapping Table (ARM; occasionally present on hybrid boards) | Low |
+| `LPIT` | Low Power Idle Table — C-state residency structure | Medium |
+
+Tables above the horizontal section in the real `spoof.sys` are the "classic ~17" most builders cover. Everything from `SLIT` down is what the shipping spoofer additionally patches — leaving any of these intact lets EAC's ACPI-OEM-ID walk still fingerprint the host firmware.
 
 **Anomaly-list hazard:** Rules.bin section `0x70` (SMBIOS anomaly list) blocks known filler strings:
 - `"To be filled by O.E.M."`
@@ -377,13 +392,15 @@ Per **alexanderyy** (UC legend, trust 78 — thread 778933):
 
 > Permanent MAC is collected 4 different places, common ndis way, then own entry from arp table, ExAllocateUUID and PCIE Config Space DSN (unspoofable without hypervisor)
 
+(**Spelling correction:** `ExAllocateUUID` is not a real `ntoskrnl` export. The actual kernel APIs are `ExUuidCreate` (single UUID, modern name) and `ExAllocateUuids` (batch of UUIDs, plural lowercase). alexanderyy's shorthand covers both; EAC reads whichever the current build calls. A hook written against the literal spelling `ExAllocateUUID` resolves to nothing.)
+
 Four collection paths EAC uses for permanent-MAC fingerprinting:
 
 | # | Path | Spoofable via |
 |-|-|-|
 | 1 | **`OID_802_3_PERMANENT_ADDRESS` via NDIS** | NDIS filter driver (standard approach) |
 | 2 | **ARP table own-entry** | Hook ARP table API or filter at NDIS |
-| 3 | **`ExAllocateUUID`** — embeds MAC into generated UUIDs | Must patch ExAllocateUUID output or hook it |
+| 3 | **`ExUuidCreate` / `ExAllocateUuids`** — v1 UUID generation historically embeds the first NIC's MAC into the node field of generated UUIDs | Hook `ExUuidCreate` (single) and/or `ExAllocateUuids` (batch) and rewrite the trailing 6 bytes of each output UUID. EAC reads whichever variant the current build calls, so a complete spoofer hooks both. |
 | 4 | **PCIe Config Space DSN** (Device Serial Number capability) | **UNSPOOFABLE without hypervisor** |
 
 #### The PCIe Config Space DSN path — the hardest one
@@ -397,7 +414,7 @@ The PCIe Device Serial Number is an extended capability (`capability ID 0x03`) o
 A spoofer that only hooks the NDIS path leaves three other collection paths exposed. **A complete MAC spoofer requires:**
 1. NDIS filter for path 1.
 2. ARP-table interception for path 2.
-3. `ExAllocateUUID` hook for path 3.
+3. `ExUuidCreate` **and** `ExAllocateUuids` hooks for path 3 (both; the correct kernel exports — `ExAllocateUUID` is not a real symbol).
 4. **Hypervisor for path 4** — or accept the PCIe DSN contribution to your HWID hash and hope the backend tolerates drift.
 
 Most commercial HWID spoofers only hit path 1 (and maybe 2). This is why "I spoofed my MAC but still get HWID banned" is a common experience — the other three paths still reveal the real MAC.
@@ -599,6 +616,8 @@ EAC reports DMA Protection state. Systems with it off while a DMA cheat is activ
 ### WDAC — vulnerable driver block list
 
 Updated by Windows Update quarterly. EAC's `DRIVER_LIST` IOCTL returns each loaded driver's WDAC-match state.
+
+**Cross-reference:** the authoritative BYOVD catalog EAC enforces against is maintained in [docs/12 Part 1](12-cheat-detection.md). The list below is the WDAC-blocklist subset observed in this driver's string table; `GPC-U64.sys` appears in this WDAC list but was historically omitted from doc 12's catalog — treat both files as needing to agree, and if you add/remove a driver here, mirror it there.
 
 Known block-listed vulnerable drivers:
 
@@ -831,7 +850,7 @@ Ranked worst-to-best spoofer target:
 
 ---
 
-## Part 6.5 — KVM / VM-passthrough — a viable alternative path
+## Part 7 — KVM / VM-passthrough — a viable alternative path
 
 **Important community finding (UC thread 781548, Nov 2026):**
 
@@ -887,7 +906,7 @@ Operational takeaway: **VM-based Fortnite with Nika/AutoVirt + properly-spoofed 
 
 ---
 
-## Part 7 — The arms race summarized
+## Part 8 — The arms race summarized
 
 Three detection axes a spoofer has to stay ahead of:
 
@@ -904,7 +923,7 @@ The operational problem for spoofers is **staying ahead of all four simultaneous
 
 ---
 
-## Part 8 — Weight summary (which fields matter most)
+## Part 9 — Weight summary (which fields matter most)
 
 Each field is hashed into contributions to the backend fingerprint. Weighting (reconstructed from observed behavior — exact weights are Epic's secret):
 

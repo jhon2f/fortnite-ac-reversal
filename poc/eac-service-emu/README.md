@@ -61,7 +61,7 @@ HANDLE p = CreateFileW(L"\\\\.\\pipe\\EasyAntiCheat_EOS",
 
 ## Known limits
 
-- Shared memory header uses speculative magic (`'EACS'`). Real magic is not byte-verified from current binaries. If you're trying to drive an actual game process against this stub, patch the game side to accept the stub header or reverse the real magic from `b.dll` at RVA `0x4FEA3`.
+- Shared memory header uses speculative magic (`'EACS'`). Real magic is not byte-verified from current binaries. If you're trying to drive an actual game process against this stub, patch the game side to accept the stub header, or recover the real magic by tracing what `b.dll` ordinal 1 writes into the mapping at runtime. The ord-1 entry point is byte-verified at RVA `0x4FEA3` (init/unpack trampoline — see `eac-emu-stub` README and `b_dll_ordinals.c`), but the magic constant itself lives in what that function stores into the section, not in the static bytes at that RVA.
 - Pipe frame format assumes the reconstructed `{len,seq,opcode,flags,body}` layout from doc 05. Real opcodes are not byte-verified.
 - `QuoteKeyStatus=1` is accepted locally but server-side TPM attestation will reject without a real quote.
 

@@ -111,6 +111,10 @@ EAC_AntiCheatClient_BeginSession(EOS_HAntiCheatClient h,
     pipe_connect();                            // to EasyAntiCheat_EOS.exe
     pipe_hello();
     driver_session_auth();                     // IOCTL_EAC_SESSION_AUTH
+    // Note: the raw IOCTL code is XOR'd against g_sessionCookie before
+    //       DeviceIoControl — see Part 5 (Driver client) for the wrapper.
+    //       The cookie is derived at this auth step, so this is the first
+    //       IOCTL that has to go through the XOR path.
     // Note: rules.bin is typically loaded/decrypted by the SERVICE, not here.
     //       The service pushes parsed rules to the scanner via the pipe.
     environment_sweep_once();                  // anti-vm, anti-debug,
@@ -399,19 +403,27 @@ zstd confirmed in agent DLL — 2 occurrences of zstd magic `0x28B52FFD` at offs
 
 ## Part 8 — TLS transport + pin check
 
-Statically-linked TLS stack. Current builds use a BoringSSL fork. Trusts a small set of certificate SPKI hashes hardcoded in the DLL.
+Statically-linked TLS stack — **mbedTLS** (see Part 7.6 for the byte-level evidence: `TLS-RSA-WITH-…` suite naming, mbedTLS curve-name list, TLS 1.2-only label set). Trusts a small set of certificate SPKI hashes hardcoded in the DLL.
+
+Pin check is wired in as an mbedTLS verify callback (`mbedtls_ssl_conf_verify` → user `f_vrfy`), invoked per-cert during chain validation:
 
 ```c
-int eac_tls_verify_cert(cert_chain)
+int eac_tls_verify_cb(void* user, mbedtls_x509_crt* crt, int depth, uint32_t* flags)
 {
-    compute SPKI SHA256 of leaf → spkiHash;
+    if (depth != 0) return 0;              // only pin the leaf
+    uint8_t spkiHash[32];
+    sha256(crt->pk_raw.p, crt->pk_raw.len, spkiHash);   // SPKI SHA256
     for (int i = 0; i < EAC_PIN_COUNT; i++)
-        if (!memcmp(spkiHash, g_pinHashes[i], 32)) return 1;
-    return 0;
+        if (!memcmp(spkiHash, g_pinHashes[i], 32)) {
+            *flags = 0;                     // clear any cert errors
+            return 0;
+        }
+    *flags |= MBEDTLS_X509_BADCERT_OTHER;
+    return MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
 }
 ```
 
-**To mitm for research:** find the pin function (string xref "pin" or by cross-ref from TLS handshake code), patch `memcmp` → `mov al, 1; ret`. Install your CA, mitmproxy sees cleartext.
+**To mitm for research:** find the pin callback (xref from `mbedtls_ssl_conf_verify` or by string xref on the mbedTLS error codes), patch the `memcmp` → `mov al, 1; ret` path or short-circuit the callback to `return 0; *flags = 0`. Install your CA, mitmproxy sees cleartext.
 
 ### Alternative — the Kaspersky SSL MITM trick
 

@@ -88,12 +88,14 @@ A third-party tool (not from EAC) that:
 
 ### Hypervisor-based cheat detection
 
-A type-2 or stealth type-1 hypervisor that reads game memory from the host. Detected by:
+A type-2 or stealth type-1 hypervisor that reads game memory from the host. Historically theorized to be detected by:
 - Anti-VM signals ([08 protection stack](08-protection-stack.md))
 - APIC ID topology anomalies
-- CPUID timing baseline deviation
+- CPUID timing baseline deviation *(disputed — see note below)*
 - CPUID leaf 0x16 (frequency) returning unexpected values
-- rdtsc timing of operations that would cause vmexits under a hypervisor
+- rdtsc timing of operations that would cause vmexits under a hypervisor *(disputed — see note below)*
+
+**Disputed / historical — adversemiller correction (thread 781548, see [14 Part 10.5](14-blind-spots.md)):** community teardown reports that **EAC does NOT actually care about VM timing** in the current build — KVM-based paths (Nika-Read-Only, AutoVirt) are viable and not flagged by timing baselines. Treat the CPUID-timing / rdtsc-vmexit-timing entries above as legacy / theoretical rather than active signals until byte evidence confirms otherwise.
 
 A well-written stealth hypervisor can defeat most individually. EAC's answer: raise to "suspicious" rather than "fatal" and let server-side ML correlate over multiple sessions.
 
@@ -314,7 +316,9 @@ Example: EAC probes a specific UE function. It expects the call stack to go `Gam
 
 ### Mechanism 2: Function-unwind detection
 
-EAC walks the call stack via `RtlCaptureStackBackTrace` or similar unwind APIs. Stack frames that don't correspond to function-unwind-data-valid return addresses → flag.
+EAC walks the call stack via `RtlCaptureStackBackTrace` or similar unwind APIs at specific instrumented points inside the game process. Stack frames that don't correspond to function-unwind-data-valid return addresses → flag.
+
+This is why the "external invoker to call internal UFUNCTIONs" approach has a limited lifespan — the stack walk catches it even if the data read/write succeeds.
 
 ### Requirements for a working call-stack spoofer against Fortnite EAC
 
@@ -322,20 +326,9 @@ EAC walks the call stack via `RtlCaptureStackBackTrace` or similar unwind APIs. 
 - All frames must be within whitelisted game modules.
 - Unwind data must be consistent — return addresses must correspond to real function prologues.
 - RSP alignment must match what a natural call chain would produce.
-
-Simple "gadget-based" call spoofers don't work against current-build EAC.
-
-### Requirements for a working call-stack spoofer against Fortnite EAC
-
-- **Must be 1:1 flawless** — the stack must look exactly like a legit UE internal invocation.
-- Simple "gadget-based" call spoofers don't work against current-build EAC.
 - Need to replicate: return addresses, RBP frames, unwind data consistency, stack pointer alignment.
 
-### Detection mechanism
-
-EAC walks the call stack via `RtlCaptureStackBackTrace` or similar unwind APIs at specific instrumented points inside the game process. Stack frames that don't correspond to function-unwind-data-valid return addresses → flag.
-
-This is why the "external invoker to call internal UFUNCTIONs" approach has a limited lifespan — the stack walk catches it even if the data read/write succeeds.
+Simple "gadget-based" call spoofers don't work against current-build EAC.
 
 ---
 
@@ -537,16 +530,16 @@ The cheat wants to hook `MmCopyVirtualMemory` to return fake data when EAC's dri
 
 ### 5.5 — What EAC can observe
 
-EAC catches this via timing + MSR state, NOT via memory content:
+Historically theorized detection surface — MSR state primarily, with timing as a secondary (now disputed) axis:
 
-- **CPUID timing** — VM-exits on CPUID increase its cost. Timing baseline flags.
+- **CPUID timing** *(disputed)* — VM-exits on CPUID increase its cost; timing baseline *was* theorized to flag. Per adversemiller (thread 781548, [14 Part 10.5](14-blind-spots.md)) the current build **does NOT care about VM timing** — KVM paths (Nika-Read-Only, AutoVirt) run without being flagged on this axis.
 - **MSR state anomalies** — some hypervisors leak state in MSRs the guest can read.
 - **APIC ID topology** inconsistencies.
 - **TSC-adjust MSR** nonzero when hypervisor adjusts TSC.
 - **LBR / Intel PT state** — `IA32_DEBUGCTL` MSR observable.
 - **PT-mode checks** — RDMSR patterns that vmexit return data that doesn't match bare-metal.
 
-Current 2026 state: a well-written stealth hypervisor is **not caught by individual-session analysis**. It's caught by behavioral ML correlating across sessions.
+Current 2026 state: a well-written stealth hypervisor is **not caught by individual-session analysis**. MSR / APIC state and behavioral ML correlating across sessions are the real detection — timing alone is not, per the adversemiller correction.
 
 ### 5.6 — Public hypervisor projects
 

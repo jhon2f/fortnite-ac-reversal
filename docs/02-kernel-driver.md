@@ -39,9 +39,9 @@ Source thread  : https://www.unknowncheats.me/forum/anti-cheat-research/781475-r
 
 **Growth Nov 20 2026 vs v3.2.0.0**: +~6 MB file, +~54 KB `.text`, +~6.5 MB monster section.
 
-### Layout (current-build teardown)
+### Layout (v3.2.0.0 reference — current-build has shifted offsets, see Part 1)
 
-Target build fingerprint: 40 MB driver, 9 sections, entry at end of `.text` (`0x26F738`). If your `.sys` is smaller / entry at start, you have a different build — the *patterns* here apply, the numbers may have shifted.
+Target build fingerprint for this teardown: 40 MB driver (v3.2.0.0), 9 sections, entry at end of `.text` (`0x26F738`). The current Nov 20 2026 build has grown to 46 MB with entry at `0x27C438` and `.text` extended to `0x27C464` (see Part 1). If your `.sys` is smaller / entry at start, you have a different build — the *patterns* here apply, the numbers may have shifted.
 
 ```
 .text     0x1000    - 0x26F764   plain MSVC code (~1490 functions w/ unwind)
@@ -58,7 +58,7 @@ Target build fingerprint: 40 MB driver, 9 sections, entry at end of `.text` (`0x
 ### Quirks
 
 - **Several raw pointers overlap between sections.** Sloppy on purpose or just sloppy — either way it breaks lazy parsers.
-- **Entry point at the END of `.text`** (`0x26F738`). Easy to miss.
+- **Entry point at the END of `.text`** (`0x26F738` in v3.2.0.0; `0x27C438` in the current Nov 20 2026 build). Easy to miss.
 - **"Image B" at `0x37D350 – 0x46A616`** — another ~1 MB of plain code with 4054 of its own pdata functions inside the monster section. The rest (`0x46A616` up to `~0x2693000`) is the compressed blob.
 - **`.text` internal calls: 7586. Image B internal: 5815. Cross-calls between them: zero.** They only meet through the cage and pointer tables.
 - **Import table: exactly ONE import.** `FLTMGR.SYS!FltRegisterFilter` (import dir `0x30CCA0`, IAT `0x30CCD8`). **Never called.** Zero static xrefs. It's only there to force fltmgr to load before `eac.sys`.
@@ -75,7 +75,9 @@ Target build fingerprint: 40 MB driver, 9 sections, entry at end of `.text` (`0x
   0x222AE  – 0x286ED
   ```
 
-### Entry chain (`0x26F738`)
+### Entry chain (`0x26F738` — v3.2.0.0 reference; current build entry is `0x27C438`)
+
+> The disassembly below was captured against v3.2.0.0. The current Nov 20 2026 build moved the entry point to `0x27C438` and enlarged `.text` to `0x27C464` — the `[rip + 0xa6a79]` -> `0x316188` displacement and the `0x6595E` main address have not been re-verified against the new build. Treat the structure as representative; re-pull exact offsets from your own binary before using them.
 
 ```asm
 0x26F708  mov    rax, qword ptr [rip + 0xa6a79]     ; -> 0x316188
@@ -89,7 +91,7 @@ Target build fingerprint: 40 MB driver, 9 sections, entry at end of `.text` (`0x
 0x26F72D  ret
 ```
 
-Security-cookie companion check (cells `0x316188` / `0x316190`). Then `0x26F738` calls it, then calls the real main with the original `(DriverObject, RegistryPath)` args. **Main is at `0x6595E`**, hand-written prologue, immediately jumps into the cage at `0x3B7FE0`.
+Security-cookie companion check (cells `0x316188` / `0x316190`). Then `0x26F738` calls it, then calls the real main with the original `(DriverObject, RegistryPath)` args. **Main is at `0x6595E`** (v3.2.0.0), hand-written prologue, immediately jumps into the cage at `0x3B7FE0`.
 
 ---
 
@@ -367,7 +369,7 @@ Symbolic names mine; numbers rotate per version.
 | `DRIVER_LIST` | Loaded kernel drivers + hashes + signer cert thumbprints + **WDAC block-list match state**. |
 | `CALLBACK_DUMP` | Enumerate `PsSet*` callback entries + Ob entries, hash owning driver each. |
 | `PHYS_READ` | Physical-memory read via `MmMapIoSpace`. Classic current build; gone on EOS variant. |
-| `SELF_CHECK` | Driver signs `(hash || nonce || bootCookie)` with embedded Ed25519 key. Agent forwards to backend. |
+| `SELF_CHECK` | Driver signs `(hash || nonce || bootCookie)` with RSA (likely RSA-2048 or RSA-4096; see Part 12 for correction and embedded-key count). Agent forwards to backend. |
 | `HEARTBEAT` | Keepalive. |
 | `REPORT_FLAG` | Agent → driver: "I found this, add to session report." |
 
@@ -438,6 +440,8 @@ Referenced by six record walkers (`0x1F17BA – 0x1F1EBB`, `0x252DC0 – 0x25312
 ```
 (*(u32*)record ^ (id * -0x5163F18C)) == 0xE7AECCAE
 ```
+
+> **OBSOLETE after Nov 2026 rotation.** Both `0xE7AECCAE` and `-0x5163F18C` have **zero occurrences** in the current driver `.text` (byte-scanned Nov 20 2026). The new magic has not yet been identified — **do not use this constant on the current build.** The walker addresses above are also v3.2.0.0 offsets; re-locate them in the enlarged `.text`.
 
 Version compare at `record+4`, bounds at `+0x110` / `+0x114`.
 
@@ -547,7 +551,7 @@ Note on BCD: the persistent BCD lives on disk at `C:\Boot\BCD` (BIOS) or `EFI Sy
 
 **The Microsoft-Windows-Threat-Intelligence ETW provider.** GUID: `{F4E1897C-BB5D-5668-F1D8-040F4D8DD344}`.
 
-Kernel ETW provider that emits events **from inside ntoskrnl** for specific suspicious operations. Normally subscribable only by Protected Process Light (PPL) subscribers — EAC's driver qualifies via its WHQL cross-signature.
+Kernel ETW provider that emits events **from inside ntoskrnl** for specific suspicious operations. The PPL (Protected Process Light) gate everyone cites applies to **user-mode consumers** of Microsoft-Windows-Threat-Intelligence — a user-mode process has to be running as PPL (anti-malware-light) to subscribe. **Kernel-mode subscribers (via `EtwRegister` / `EtwRegisterEx`) do not need PPL** — there is no PPL check on the kernel path at all. EAC subscribes from the driver, so the PPL mechanism is not involved; the WHQL cross-signature is what got the driver loaded, not what "qualifies" it for TI.
 
 ### What TI reports
 
@@ -730,7 +734,11 @@ Driver verifies, periodically:
 
 ### Driver self-sign (SELF_CHECK IOCTL)
 
-The driver signs `(hash || nonce || bootCookie)` with an **embedded RSA private key** (CORRECTED Nov 20 2026 — prior "Ed25519" claim was wrong, see below). The signed blob gets forwarded to the backend, backend verifies with the corresponding public key. Fresh signatures per request (nonce + bootCookie) → no replay attacks.
+The driver signs `(hash || nonce || bootCookie)` with an **RSA private key** (CORRECTED Nov 20 2026 — prior "Ed25519" claim was wrong, see below). The signed blob gets forwarded to the backend, backend verifies with the corresponding public key. Fresh signatures per request (nonce + bootCookie) → no replay attacks.
+
+What's embedded vs resolved at runtime:
+- **Embedded in `.rdata`**: the 12 RSA **public** keys used for verification (session-attestation roots, rules.bin signing pubkey, self-check verifier pubkeys). These are plaintext SubjectPublicKeyInfo blobs — see offsets below.
+- **NOT embedded as a plain key constant**: the RSA **private** signing key itself. It is resolved at runtime — most likely TPM-sealed material unwrapped at driver init, or a key the user-mode service hands over the shared pipe during session setup. The driver has a key *handle* in memory while running, not a static key blob you can pattern-match in `.rdata`.
 
 **CORRECTION (Nov 20 2026)**: Byte-scan of the driver found 12 RSA SubjectPublicKeyInfo OID matches (`06 09 2A 86 48 86 F7 0D 01 01 01`) in `.rdata`. Zero Ed25519 OID matches (`06 03 2B 65 70`). The driver's signing path is RSA, not Ed25519. One `secp256r1` OID match at offset `0x303F8E` suggests ECDSA-P256 is also supported for alternate paths.
 
@@ -739,7 +747,7 @@ The driver signs `(hash || nonce || bootCookie)` with an **embedded RSA private 
 For researchers:
 - Cross-reference from the SELF_CHECK IOCTL handler.
 - The driver contains 12 RSA public keys embedded in `.rdata` (first @ `0x2C035B6`). These are probably: multiple Epic session-attestation pubkeys (for rotation), Anti-Cheat Integrity CA root + intermediate pubkeys, rules.bin signing pubkey, and self-check verification pubkeys.
-- The private signing key is loaded at runtime (not embedded as a plain key constant) — likely derived from the driver's TPM-sealed material or from a key the service hands over via the shared pipe.
+- The private signing key is **not** stored as a plain key constant — it's wrapped (TPM-sealed material unwrapped at init, or handed over the pipe at session setup). You will not find it by greping `.rdata`; you have to trace from the SELF_CHECK handler through the key-unwrap routine.
 - Sig is likely 256 bytes (RSA-2048) or 512 bytes (RSA-4096), not 64 bytes.
 
 Even if the key material were extracted, the backend verifies the key matches the expected driver version. Rotating your signing key means Epic doesn't recognize your driver.
@@ -822,7 +830,7 @@ piddrv.sys / piddrv64.sys  (memory primitives)
 
 Separately worth calling out: the `0x37D350 – 0x46A616` region inside the "monster section" contains ~1 MB of plain code with 4054 pdata functions of its own. Zero cross-calls to `.text`. Only accessible via the cage and pointer tables.
 
-This is where the most-sensitive routines live — the pin check implementation, the rules.bin decryptor, the ed25519 signing path. Researchers refer to it as "Image B."
+This is where the most-sensitive routines live — the pin check implementation, the rules.bin decryptor, the RSA signing path (see Part 12 — the signature scheme was corrected from the previously-assumed Ed25519 to RSA based on byte-scan OID evidence). Researchers refer to it as "Image B."
 
 Reversing Image B is essentially a separate subproject — its calling convention, its internal pointer table, its handler entries are all isolated from the "normal" code at `.text`.
 

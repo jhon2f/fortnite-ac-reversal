@@ -254,7 +254,7 @@ Standard user-mode patcher:
 ### Fortnite
 
 - Uses EAC's **full kernel-driver stack** (`EasyAntiCheat.sys` / `EasyAntiCheat_EOS.sys`).
-- The handle-strip ObCallback prevents `OpenProcess` with memory-access rights from getting a useful handle. So an **external** injector can't write to Fortnite's memory.
+- The handle-strip ObCallback prevents `OpenProcess` with memory-access rights from getting a useful handle (see [02 — kernel driver](../02-kernel-driver.md) Part N — ObRegisterCallbacks handle strip). So an **external** injector can't write to Fortnite's memory.
 - Fortnite's EAC init callback produces an Ed25519 signature that the shipping exe verifies ([13 — EAC emulation](../13-eac-emulation.md)). NOPing a validation function gets you a "success" but no valid signature → game refuses to continue.
 
 The MCC approach is specific to EAC-less-via-EOS-only architectures.

@@ -171,7 +171,7 @@ Everything in the docs is a map. The specific values you MUST pull from your own
 - [ ] `ObCallback` strip mask for process AND thread
 - [ ] Baked-in Epic pubkey location (for session_auth verification)
 - [ ] Baked-in Epic pubkey location (for self-check signing)
-- [ ] 45-tag module manifest (46 in pre-Nov-20-2026 builds; current = 45 after `IZ` tag removed)
+- [ ] module manifest tag count (current build = 45)
 - [ ] Handler feature-flag table layout
 - [ ] Record walker magic constant
 - [ ] Oodle blob offset + size
@@ -197,7 +197,7 @@ Everything in the docs is a map. The specific values you MUST pull from your own
 - [ ] Salt behavior
 - [ ] AES-GCM IV length
 - [ ] Root key
-- [ ] Signing public key (Ed25519)
+- [ ] Signing public key (RSA, 2048-bit or 4096-bit — resolve via sig-size check; possible ECDSA-P256 alternate)
 - [ ] Section type numbers (may rotate)
 
 ### Pipe protocol ([05](05-pipe-protocol.md))
@@ -229,7 +229,7 @@ Claims that cross-check against multiple independent sources:
 
 **Verification against v3.2.0.0 era**: Correct.
 
-**Verification against Nov 20 2026 build**: **NOT CORRECT ANYMORE.** The driver has rotated to a MurmurHash3-style finalizer: `0xFF51AFD7ED558CCD` with 1176 sites. SplitMix64's `0x9E3779B185EBCA87` has 0 sites in the new driver. The agent DLL (`b.dll`) retains 4 sites of the old splitmix64 constant though — different hash function per module.
+**Verification against Nov 20 2026 build**: **NOT CORRECT ANYMORE.** The driver has rotated to a MurmurHash3-style finalizer: `0xFF51AFD7ED558CCD` with 1176 sites. SplitMix64's `0x9E3779B185EBCA87` has 0 sites in the new driver. The agent DLL (`b.dll`) also uses the MurmurHash3-style finalizer for its primary hash-dispatch (see doc 15 Part 6.3); the 4 residual splitmix64 sites in `b.dll` are leftovers in non-dispatch paths, not a second active hash function. Driver and agent now share the same finalizer.
 
 ### Secure Boot PCR mapping
 
@@ -455,7 +455,7 @@ Specific UC threads that provided corrections / additions to this repo. Attribut
 
 | Thread | Author | What it added |
 |-|-|-|
-| [781475](https://www.unknowncheats.me/forum/anti-cheat-research/781475-reversal-eac-detection-dma-driver-hwid-collection.html) | **MinaMeow** (Nov 14 2026) | Full EAC driver reversal with build-specific fingerprints. Confirms driver v3.2.0.0, hash `0bbe6d48...340b9`, 40,189,592 bytes. **Correction:** 34 MB blob is PLAIN, not Oodle-compressed. |
+| [781475](https://www.unknowncheats.me/forum/anti-cheat-research/781475-reversal-eac-detection-dma-driver-hwid-collection.html) | **MinaMeow** (Nov 14 2026) | Full EAC driver reversal with build-specific fingerprints. Confirms driver v3.2.0.0. **Hash attribution error:** her hash `0bbe6d48...340b9` is actually the 1 MB 32-bit service EXE (`EasyAntiCheat_EOS.exe`), not the driver — see Correction #1. **Correction:** 34 MB blob is PLAIN, not Oodle-compressed. |
 | [774464](https://www.unknowncheats.me/forum/anti-cheat-research/774464-eac-eos-emulator-proxy.html) | **DANNZ** (Sept 30 2026) | UC release thread for the Linux-proxy EAC-EOS emulator. Community confirms: only free-tier EAC games; doesn't work on Rust or Fortnite. |
 | [772331](https://www.unknowncheats.me/forum/fortnite/772331-dump-fortnite-eac.html) | **notaskid65** (Sept 2026) | Fortnite's `PAGE_NOACCESS` + `KiUserExceptionDispatcher` trampoline anti-dump mechanism. 500 page decryption limit. Similar to Byfron usermode. |
 | [772331](https://www.unknowncheats.me/forum/fortnite/772331-dump-fortnite-eac.html) | **MichButChina + yardiuu** | EAC-EOS user-mode is **manual-mapped, random name** (`eac_usermode_<Random>.dll`) in system32. On-disk DLL is a forwarder. |
@@ -475,7 +475,7 @@ The Nov 20 2026 Fortnite EAC update was dumped and byte-level analyzed. Multiple
 
 **Corrections landed in this cycle:**
 
-1. **Hash attribution fix** — MinaMeow's `0bbe6d48f45fc155f1c1d029df8de67f221b7329010164eda2dd06d7978340b9` is the SERVICE EXE (`EasyAntiCheat_EOS.exe`), not the driver as she wrote. Real driver hash in Nov 20 build: `3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b`.
+1. **Hash attribution fix** — MinaMeow's `0bbe6d48f45fc155f1c1d029df8de67f221b7329010164eda2dd06d7978340b9` is the SERVICE EXE (`EasyAntiCheat_EOS.exe`, 1 MB, 32-bit PE32 — see doc 15 Part 11), not the driver as she wrote. The 40,189,592-byte (~38 MB) size she quoted matches neither the 1 MB service EXE nor the 46 MB driver and should be disregarded as a mismeasurement. Real driver hash in Nov 20 build: `3eabcfe97e8a2bde0b3db1ab1645c66c8183f053588699d3409d93d2235c5d2b` (46 MB).
 
 2. **Hash-dispatch algorithm swap** — Driver no longer uses splitmix64 (constant `0x9E3779B185EBCA87` → 0 sites in new driver). Now uses a MurmurHash3-style finalizer with constant `0xFF51AFD7ED558CCD` (1176 sites). Hash-reverse tables derived against MinaMeow's constant are broken.
 
@@ -497,9 +497,9 @@ The Nov 20 2026 Fortnite EAC update was dumped and byte-level analyzed. Multiple
 
 11. **New signing cert** — thumbprint `3CD980E3BACD8FB6FB3F532AFF62753FB7DE47A8`, DigiCert Trusted G4 CA, valid Feb 2026 → Feb 2029. Replaces prior Nov 2025 cert.
 
-12. **Explicit tool blacklist in launcher** — 20+ literal process/driver name blocks in packed.dll `.rdata`. Documented in [doc 12 Part 1.5](12-cheat-detection.md#part-15--launcher-wrapper-explicit-tool-blacklist-nov-20-2026).
+12. **Explicit tool blacklist in launcher** — 20+ literal process/driver name blocks in packed.dll `.rdata`. Documented in [doc 12 Part 1.5](12-cheat-detection.md#part-1.5--launcher-wrapper-explicit-tool-blacklist-nov-20-2026).
 
-13. **New pre-flight error codes** — DTrace, DotLocal, UEFI bootkit, Secure-Core-missing, ARM64-unsupported, Win10-22H2-minimum, driver-verifier, kernel-modified, case-sensitive-game-path. See [doc 12 Part 1.6](12-cheat-detection.md#part-16--launcher-wrapper-new-pre-flight-error-codes-nov-20-2026).
+13. **New pre-flight error codes** — DTrace, DotLocal, UEFI bootkit, Secure-Core-missing, ARM64-unsupported, Win10-22H2-minimum, driver-verifier, kernel-modified, case-sensitive-game-path. See [doc 12 Part 1.6](12-cheat-detection.md#part-1.6--launcher-wrapper-new-pre-flight-error-codes-nov-20-2026).
 
 14. **zstd compression confirmed in agent DLL** — 2 zstd-magic occurrences at offset `0x233B87`. Used for telemetry body compression with baked dictionary.
 

@@ -14,7 +14,7 @@ Two possible halves:
 
 | Half | What it is |
 |-|-|
-| **(1) Client-side stub** | A replacement `EasyAntiCheat_x64.dll` with the same export table, same ordinals, same function signatures as real EAC. All exported functions return "success" or no-op values. |
+| **(1) Client-side stub** | A replacement `EasyAntiCheat_x64.dll` (classic EAC) / `EasyAntiCheat_EOS_x64.dll` (current Nov 2026 EOS build; the launcher-wrapper `a.dll` with 5 named exports `a,b,c,d,e` at RVAs `0xC7837 / 0xC7892 / 0xC78C1 / 0x2DDB2 / 0xC78F3`) with the same export table, same ordinals, same function signatures as real EAC. All exported functions return "success" or no-op values. |
 | **(2) Backend emulator** | A stand-in for Epic's EAC backend. Talks the EAC backend protocol over EOS SDK, issues valid-looking session signatures using keys the emulator controls, which the game's local EAC client accepts. |
 
 The PoC in this repo is **(1) only**. (2) is private-server territory.
@@ -28,8 +28,8 @@ Fortnite's server-side acceptance of your session depends on EAC producing signe
 ### The chain of signatures
 
 1. **Launcher → EAC** — `FortniteLauncher.exe` signs a session token with a private key baked into the launcher's signed binary + rotated per Epic build.
-2. **EAC Driver → Service** — Driver SELF_CHECK IOCTL signs (hash || nonce || bootCookie) with **ed25519 private key embedded in the driver**.
-3. **EAC Agent → Fortnite Shipping** — Agent's init callback produces an ed25519 signature over session state. Private key for this is session-ephemeral and derived via ECDH with Epic's backend.
+2. **EAC Driver → Service** — Driver SELF_CHECK IOCTL signs (hash || nonce || bootCookie) with an **RSA private key embedded in the driver** (12 RSA pubkey OIDs present in driver at offset `0x2C035B6`; a secp256r1 ECDSA-P256 alternate OID sits at `0x303F8E`).
+3. **EAC Agent → Fortnite Shipping** — Agent's init callback produces an RSA signature over session state. Private key for this is session-ephemeral and derived via ECDH with Epic's backend.
 4. **EAC Service → Epic Datarouter** — Service posts telemetry signed by an authenticated TLS session, cert pinned.
 5. **EAC Backend → Game Server** — Epic's backend returns session-attestation tokens the game server verifies.
 
@@ -40,8 +40,8 @@ Fortnite's server-side acceptance of your session depends on EAC producing signe
 | Link | Required to break | Feasibility |
 |-|-|-|
 | 1 — Launcher session token | Steal launcher signing key OR patch Launcher to use your key | **Infeasible.** Launcher binary is signed with Epic's cert; patching it breaks its own signature check. |
-| 2 — Driver SELF_CHECK ed25519 | Extract private key from signed `.sys` OR find reversal path to leak during runtime | **Infeasible.** Key is in VMProtect'd section. Even if extracted, backend verifies (hash matches public key record) so you'd need to rotate your driver's hash and get it on Epic's whitelist. |
-| 3 — Agent init ed25519 | Compromise the ECDH key agreement OR extract ephemeral key from memory before use | **Hard.** ECDH exchange is with Epic's backend over TLS with pin. |
+| 2 — Driver SELF_CHECK RSA | Extract RSA private key from signed `.sys` (12 RSA pubkey OIDs cluster at driver offset `0x2C035B6`, secp256r1 alternate at `0x303F8E`) OR find reversal path to leak during runtime | **Infeasible.** Key is in VMProtect'd section. Even if extracted, backend verifies (hash matches public key record) so you'd need to rotate your driver's hash and get it on Epic's whitelist. |
+| 3 — Agent init RSA | Compromise the ECDH key agreement OR extract ephemeral key from memory before use | **Hard.** ECDH exchange is with Epic's backend over TLS with pin. |
 | 4 — Service → Datarouter TLS | MITM the pinned TLS connection | **Doable for observation** (Kaspersky SSL trick). **Not doable for forgery.** |
 | 5 — Backend session attestation | Impersonate Epic's backend to your own game server | **Possible only in a private-server context.** Not possible against Epic's own game servers. |
 
@@ -53,13 +53,13 @@ Fortnite's server-side acceptance of your session depends on EAC producing signe
 
 Not practical. The "what would an advanced adversary need" threat model.
 
-### Attack 3.1 — Extract driver ed25519 private key
+### Attack 3.1 — Extract driver RSA private key
 
-The driver signs SELF_CHECK with an embedded ed25519 private key. If extracted:
+The driver signs SELF_CHECK with an embedded RSA private key (byte-scan: 12 RSA pubkey OIDs at `0x2C035B6`, secp256r1 ECDSA-P256 alternate at `0x303F8E`; zero Ed25519 OIDs anywhere in the current build). If extracted:
 
 Steps required:
 1. Reverse `EasyAntiCheat_EOS.sys` past the VMProtect layer around the signing function.
-2. Find the 32-byte private key constant OR trace the derivation of a runtime-constructed key.
+2. Find the RSA private key material OR trace the derivation of a runtime-constructed key.
 3. Extract.
 
 Blockers:
@@ -82,7 +82,7 @@ Steps:
 Blockers:
 - ECDH is ephemeral per session — key dies at session end.
 - Backend verifies signatures against the agent's ECDH public key.
-- There's an implicit authentication binding — Epic's backend expects the ECDH to be signed by the driver's ed25519 (link 2). Without link 2, link 3 is rejected.
+- There's an implicit authentication binding — Epic's backend expects the ECDH to be signed by the driver's RSA key (link 2). Without link 2, link 3 is rejected.
 
 **Chain-break:** need link 2 + link 3 together.
 
@@ -284,15 +284,15 @@ The PoC in this repo is a **(1) client-side stub** approach.
 
 ### Architecture
 
-- **Match the real `EAC_x64`'s export table ordinal-by-ordinal.** The game imports by ordinal.
+- **Match the real `EAC_x64` / `EasyAntiCheat_EOS_x64` export table ordinal-by-ordinal.** The game imports by ordinal.
 - **Each stubbed function takes the same parameters** as the real one and returns a value the game interprets as "fine, move on."
 - **Callback-registering functions** store the callback pointer and periodically call it with "nothing bad detected" results.
 
 ### Ordinal recovery
 
-1. Open the real `EasyAntiCheat_x64.dll` in CFF Explorer.
-2. Dump the export table — it's by ordinal only.
-3. Open the Fortnite shipping exe's IAT for its `EAC_x64.dll` imports.
+1. Open the real `EasyAntiCheat_x64.dll` (classic) or `EasyAntiCheat_EOS_x64.dll` (current Nov 2026 EOS launcher wrapper, aka `a.dll`) in CFF Explorer.
+2. Dump the export table. The current EOS wrapper exports 5 named functions `a,b,c,d,e` at RVAs `0xC7837`, `0xC7892`, `0xC78C1`, `0x2DDB2` (the heavy one), `0xC78F3` (see doc 15 Part 1); the classic build exports by ordinal only.
+3. Open the Fortnite shipping exe's IAT for its EAC wrapper imports.
 4. Positional mapping — game's Nth import is EAC's Nth export.
 5. Name candidates come from UE5's public anti-cheat module source + EOS SDK public samples.
 
@@ -321,9 +321,11 @@ cl /LD /O2 eac_emu_stub.c /Fe:EasyAntiCheat_x64.dll ^
    /link /DEF:eac_emu_stub.def
 ```
 
+(For a current-build Fortnite install, substitute the output name `EasyAntiCheat_EOS_x64.dll`.)
+
 ### Use
 
-1. Rename the real `EasyAntiCheat_x64.dll` in your Fortnite install to `EasyAntiCheat_x64.dll.bak`.
+1. Rename the real EAC wrapper in your Fortnite install to `.bak` — classic builds use `EasyAntiCheat_x64.dll` → `EasyAntiCheat_x64.dll.bak`; current Nov 2026 builds use `EasyAntiCheat_EOS_x64.dll` → `EasyAntiCheat_EOS_x64.dll.bak` (and the manual-mapped scanner `EasyAntiCheat_EOS.dll` aka `b.dll` sits alongside it).
 2. Drop the stub in its place.
 3. Launch via `FortniteClient-Win64-Shipping.exe` directly — not the `_EAC` wrapper.
 
@@ -347,7 +349,7 @@ Epic's backend doesn't accept sessions without a valid EAC backend session signa
 
 ### Current-build signature check breaks the stub on live Fortnite
 
-Current builds (2026) verify that EAC's init callback has returned not just success but also a matching **Ed25519 signature over session state** that only the real EAC can produce.
+Current builds (2026) verify that EAC's init callback has returned not just success but also a matching **RSA signature over session state** (byte-scan: 12 RSA pubkey OIDs in driver, zero Ed25519) that only the real EAC can produce.
 
 A stub's callback return won't carry that signature → current Fortnite will **exit at startup** even when launched directly.
 
@@ -364,7 +366,7 @@ For running a private Fortnite server, the complete picture:
 
 | Component | What it does |
 |-|-|
-| **(a) Stub `EasyAntiCheat_x64.dll`** (or patched shipping exe skipping EAC init signature check) | Makes the client not block on EAC |
+| **(a) Stub `EasyAntiCheat_x64.dll` / `EasyAntiCheat_EOS_x64.dll`** (or patched shipping exe skipping EAC init signature check) | Makes the client not block on EAC |
 | **(b) Private server** | Implements Fortnite's game protocol |
 | **(c) Backend emulation** | Stands in for Epic's matchmaking, leaderboards, and critically the EAC backend session-signing |
 | **(d) Patched shipping exe** | Accepts your emulated backend's signature (replace pinned pubkey in shipping exe or `EAC_x64` with yours) |
@@ -377,7 +379,7 @@ Community-maintained projects doing this openly (Project Reboot and similar effo
 
 Even if someone leaked all of Epic's current keys:
 
-- **Session attestation keys rotate per-season** (observed over years of public RE — the Ed25519 keypair changes between Fortnite chapters).
+- **Session attestation keys rotate per-season** (observed over years of public RE — the RSA/ECDSA session-attestation keypair changes between Fortnite chapters).
 - **Backend state has nonces + timestamps** — a stolen key lets you forge sessions for a window (hours), not forever.
 - **Epic can invalidate individual session IDs** server-side — mass-invalidate forged sessions the moment they're detected.
 - **The ban list is key-independent** — forged sessions still get flagged by behavioral ML, and HWID bans apply regardless of cryptographic authenticity.

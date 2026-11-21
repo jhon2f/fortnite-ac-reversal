@@ -16,10 +16,15 @@ EXPORTS
     ; real drop-in against a specific Fortnite build, replace with
     ; ordinals lifted from CFF Explorer against the real
     ; EasyAntiCheat_x64.dll that ships with your target build.
-    EAC_Client_Init                                         @20
-    EAC_Client_Shutdown                                     @21
-    EAC_Client_PollStatus                                   @22
-    EAC_Client_RegisterPeer                                 @23
-    EAC_Client_UnregisterPeer                               @24
-    EAC_Client_ReceiveMessage                               @25
-    EAC_Client_GetProtectedData                             @26
+    ; NOTE: the real classic EasyAntiCheat_x64.dll exports these by
+    ; ordinal ONLY (no name). Game IATs bound by ordinal will not
+    ; resolve them if the name is visible, so NONAME is required.
+    ; Users must still adjust the ordinal numbers to match their
+    ; specific target build before deploying.
+    EAC_Client_Init                                         @20 NONAME
+    EAC_Client_Shutdown                                     @21 NONAME
+    EAC_Client_PollStatus                                   @22 NONAME
+    EAC_Client_RegisterPeer                                 @23 NONAME
+    EAC_Client_UnregisterPeer                               @24 NONAME
+    EAC_Client_ReceiveMessage                               @25 NONAME
+    EAC_Client_GetProtectedData                             @26 NONAME

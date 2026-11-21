@@ -220,10 +220,13 @@ Fortnite's enforcement tiers, from lightest to heaviest:
 | **HWID ban** | Hard ban plus hardware fingerprint block. | Repeat offender appears with a fresh account on same hardware. |
 | **IP ban** (rare) | Specific IP range blocked. | Egregious cases. |
 | **Payment ban** | Account can log in, cannot purchase/receive items. | Chargeback / fraud. |
-| **V-Bucks hold** | V-Bucks frozen pending review. | Anti-fraud. |
-| **Competitive ban** | Can play unranked, can't enter arena / FNCS. | Competitive-specific violations. |
-| **Chat ban** | Can play, chat disabled. | Behavior violations. |
-| **Transaction ban** | Can play, can't buy items. | Fraud/charge-back. |
+
+This 8-tier taxonomy matches [doc 10 Part 7's ban-type summary table](10-cleaner-ban-traces.md). The following are non-anti-cheat sub-categories of Payment / Soft bans that Fortnite ops uses in parallel — listed here for completeness, but they are not separate enforcement tiers in the reverse-engineered backend protocol:
+
+- **V-Bucks hold** — sub-flag under Payment ban. V-Bucks frozen pending review (anti-fraud).
+- **Competitive ban** — sub-flag under Soft ban. Can play unranked, can't enter arena / FNCS. Competitive-specific violations.
+- **Chat ban** — sub-flag under Soft ban. Can play, chat disabled. Behavior violations.
+- **Transaction ban** — sub-flag under Payment ban. Can play, can't buy items. Fraud / chargeback.
 
 ### Shadow ban mechanics (specifically interesting)
 
@@ -442,7 +445,7 @@ Consoles don't run EAC. They don't need to — their OS is the attestation.
 ## Part 14 — Mobile Fortnite status
 
 - **Android**: available via Epic Games Store (not Google Play since 2020 lawsuit).
-- **iOS**: unavailable in US as of 2026 (Apple vs Epic ongoing); available in EU via sideloading.
+- **iOS**: available in the EU via the Epic Games Store on iOS (sideloading under DMA, since 2024). Regional availability elsewhere (US included) has shifted multiple times through 2024-2026 as the Apple vs Epic litigation and third-party-storefront rules evolved — treat any specific-region "available / unavailable" claim as time-boxed to its snapshot date (this doc: Nov 20 2026) and verify against the current Epic storefront before relying on it.
 - Mobile Fortnite has lighter server-authoritative checks (adapted for mobile performance).
 
 ### Mobile anti-cheat specifics
@@ -450,9 +453,8 @@ Consoles don't run EAC. They don't need to — their OS is the attestation.
 Fortnite mobile uses different techniques:
 
 **Android:**
-- **Google Play Integrity API** check (if installed via Play Store, which it isn't since 2020).
+- **Google Play Integrity API** check (if installed via Play Store, which it isn't since 2020). Uses the current classic / standard / standard-requests tiering — SafetyNet Attestation was deprecated by Google in 2024 and fully removed from Play Services in 2025, so it is **not** used in the Nov 2026 build.
 - **Epic's own attestation** via Fortnite app.
-- **SafetyNet** fallback.
 - Root detection via `su` binary enumeration.
 - Magisk hiding is detected via structural tests.
 - Modified APK detection (signature verification).
@@ -544,9 +546,9 @@ Beyond cheats, Epic also detects match-level fraud.
 
 ---
 
-## Part 18 — Fortnite endpoint URLs (for private-server implementation)
+## Part 18 — Fortnite endpoint URLs (authoritative list)
 
-Beyond [04 user-mode agent](04-user-mode-agent.md), Fortnite-specific endpoints:
+**This section is the single authoritative endpoint list for the repo.** Doc 04 Part 9 (EOS SDK telemetry), doc 13 Part 5 (private-server service catalog), and doc 15 (EAC CDN endpoints) should link here rather than re-enumerate — previous versions duplicated these URLs across four docs and drifted. Keep additions here; add cross-links elsewhere.
 
 ```
 https://account-public-service-prod.ol.epicgames.com
@@ -656,16 +658,7 @@ When Fortnite runs, multiple processes exist:
 
 ## Part 20 — Fortnite history vs anti-cheat
 
-| Period | Anti-cheat |
-|-|-|
-| 2017 (launch — early BR) | **BattlEye** |
-| 2017-2018 | BattlEye + EAC experiments |
-| 2018-2021 | **BattlEye + EAC dual stack** |
-| 2021 onwards | **EAC only** (Epic consolidated post-acquisition of EAC in 2018) |
-| 2022+ | EAC migrating from Classic to EOS variant |
-| 2023+ | Current EAC-EOS with Ed25519 signing, ETW-TI, TPM attestation |
-
-The dual-stack period was unusual — both anti-cheats ran simultaneously. Each caught different cheat categories; cheat developers had to defeat both. The 2021 switch to EAC-only was Epic's consolidation move after owning both the game and the anti-cheat.
+See [doc 00 Part 1](00-overview.md) for the full Fortnite anti-cheat history timeline (BattlEye → dual-stack → EAC-only → EAC-EOS). The crypto details for the current build are covered in [doc 06's Nov 20 2026 correction section](06-ipc-endpoints.md) — the current build uses **RSA signing (likely PSS with SHA384)**, not Ed25519.
 
 **Fortnite private-server emulators specifically target the pre-2021 dual-stack configurations or earlier where defeat conditions are different.**
 
@@ -673,43 +666,7 @@ The dual-stack period was unusual — both anti-cheats ran simultaneously. Each 
 
 ## Part 21 — Fortnite competitive eras + cheat waves
 
-Specific events that triggered observable EAC changes:
-
-### The 2019 "Fortnite Winter Cheat Wave"
-
-- Massive hypervisor cheat deployment during the holiday season.
-- Epic's response: emergency patch adding anti-VM timing checks in mid-December.
-- Set the precedent for "major cheat events trigger mid-season EAC updates."
-
-### The 2020 "World Cup qualifier scandal"
-
-- Multiple accused cheaters in FNCS qualifiers.
-- Epic rolled back prize distributions.
-- Established the payout-hold policy still in use.
-
-### The 2021 "RTCore64.sys crackdown"
-
-- Microsoft added RTCore64 to WDAC block list.
-- Many Fortnite cheats relied on it.
-- Precipitated the move toward manual-mapped drivers + hypervisor cheats.
-
-### The 2023 "BlackLotus era"
-
-- First publicly-disclosed UEFI bootkit bypass of Secure Boot.
-- Elite Fortnite cheat vendors adopted bootkit persistence.
-- EAC response: TPM attestation + Measured Boot PCR drift detection.
-
-### The 2024 "Project Reboot DMCA wave"
-
-- Epic went after Project Reboot derivatives aggressively.
-- Multiple repos taken down.
-- Private-server operators moved to pseudonymous hosting.
-
-### The 2025 "DMA proliferation"
-
-- Chinese FPGA DMA cards became $200 commodity.
-- Fortnite ban wave specifically targeting DMA players.
-- EAC added PCI configuration space enumeration + IOMMU state reporting.
+See [doc 00 Part 5 'Milestone cheat events'](00-overview.md) for the full timeline (2019 Winter Cheat Wave, 2020 World Cup qualifier scandal, 2021 RTCore64 crackdown, 2022 LAPSUS$, 2023 BlackLotus, 2024 Project Reboot DMCA wave, 2025 DMA proliferation). Doc 00 is authoritative; this file previously duplicated it and drifted out of sync.
 
 ---
 
